@@ -403,7 +403,7 @@ def table_create():
     return redirect(url_for("table_import", table=table))
 
 
-@app.route("/<table>/")
+@app.route("/<table>/structure")
 @require_table
 def table_structure(table):
     dataset = get_dataset()
@@ -651,7 +651,7 @@ def drop_trigger(table):
     )
 
 
-@app.route("/<table>/content/")
+@app.route("/<table>/")
 @require_table
 def table_content(table):
     page_number = request.args.get("page") or ""
@@ -1234,7 +1234,7 @@ def get_option_parser():
     parser.add_option(
         "-p",
         "--port",
-        default=8080,
+        default=8089,
         help="Port for web interface, default=8080",
         type="int",
     )
@@ -1387,6 +1387,7 @@ def main():
     # This function exists to act as a console script entry-point.
     parser = get_option_parser()
     options, args = parser.parse_args()
+    args = ["/home/daniel/test.db"]
     if not args:
         die("Error: missing required path to database file.")
 
