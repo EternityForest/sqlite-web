@@ -9,12 +9,91 @@
 
 {% block inner_content %}
   {# add filters #}
+
+  <h3>Insert row into {{table }}
+  </h3>
+  {% if not dataset.is_readonly and (not is_view or 'insert' in view_ops) %}
+  <form action="{{ url_for('table_insert', table=table) }}" method="post" role="form">
+    <details>
+      <summary>Advanced</summary>
+      {% for column in columns %}
+    {% if column.name in auto_fields %}
+      <div class="form-group row">
+        <label for="id_{{ column.name }}" class="col-sm-2 col-form-label">{{ column.name }}</label>
+        <div class="col-sm-10">
+          <div class="input-group">
+            <div class="input-group-prepend">
+              <div class="input-group-text">
+                <input class="chk-enable-column" data-target-element="id_{{ column.name }}" tabindex="-1" type="checkbox" name="chk_{{ column.name }}" aria-label="Allow updating this column.">
+              </div>
+            </div>
+            {% if column.data_type.lower() in ('text', 'blob') %}
+              <textarea class="form-control{% if column.name in errors %} is-invalid{% endif %}" disabled  id="id_{{ column.name }}" name="{{ column.name }}"></textarea>
+            {% else %}
+              <input class="form-control{% if column.name in errors %} is-invalid{% endif %}" disabled id="id_{{ column.name }}" name="{{ column.name }}" value="" />
+            {% endif %}
+            {% if column.name in errors %}
+              <div class="invalid-feedback">{{ errors[column.name] }}</div>
+            {% endif %}
+          </div>
+          <small class="form-text text-muted">
+            {% if column.primary_key %}
+              <strong>Primary key.</strong>
+            {% endif %}
+            {{ column.data_type|default('ANY') }}{% if not column.null %} NOT NULL{% endif %}
+            {% if column.default %}(default {{ column.default }}{% endif %}
+          </small>
+        </div>
+      </div>
+      {% endif %}
+      {% endfor %}
+    </details>
+
+    {% for column in columns %}
+    {% if column.name not in auto_fields %}
+      <div class="form-group row">
+        <label for="id_{{ column.name }}" class="col-sm-2 col-form-label">{{ column.name }}</label>
+        <div class="col-sm-10">
+          <div class="input-group">
+            <div class="input-group-prepend">
+              <div class="input-group-text">
+                <input class="chk-enable-column" {% if column.name not in auto_fields %} checked{% endif %} data-target-element="id_{{ column.name }}" tabindex="-1" type="checkbox" name="chk_{{ column.name }}" aria-label="Allow updating this column.">
+              </div>
+            </div>
+            {% if column.data_type.lower() in ('text', 'blob') %}
+              <textarea class="form-control{% if column.name in errors %} is-invalid{% endif %}" {% if column.name in auto_fields %} disabled {% endif %} id="id_{{ column.name }}" name="{{ column.name }}"></textarea>
+            {% else %}
+              <input class="form-control{% if column.name in errors %} is-invalid{% endif %}" {% if column.name in auto_fields %} disabled {% endif %} id="id_{{ column.name }}" name="{{ column.name }}" value="" />
+            {% endif %}
+            {% if column.name in errors %}
+              <div class="invalid-feedback">{{ errors[column.name] }}</div>
+            {% endif %}
+          </div>
+          <small class="form-text text-muted">
+            {% if column.primary_key %}
+              <strong>Primary key.</strong>
+            {% endif %}
+            {{ column.data_type|default('ANY') }}{% if not column.null %} NOT NULL{% endif %}
+            {% if column.default %}(default {{ column.default }}{% endif %}
+          </small>
+        </div>
+      </div>
+    {% endif %}
+    {% endfor %}
+
+
+
+    <button class="btn btn-primary" type="submit">Insert</button>
+  </form>
+  {% endif %}
+
+
   <table class="table table-striped small">
     <thead>
       <tr>
         {% for column in columns %}
           <th>
-            <a href="./?ordering={% if ordering == column %}-{% endif %}{{ column }}">{{ column }}</a>
+            <a href="./?ordering={% if ordering == column.name %}-{% endif %}{{ column.name }}">{{ column.name }}</a>
           </th>
         {% endfor %}
         {% if not dataset.is_readonly and table_pk %}<th></th>{% endif %}
@@ -67,4 +146,5 @@
       </li>
     </ul>
   </nav>
+
 {% endblock %}

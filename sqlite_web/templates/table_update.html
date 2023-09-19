@@ -2,7 +2,7 @@
 
 {% block inner_content %}
   <h3>Update row {{ table_pk|pk_display(pk) }} in {{ table }}
-    <input id="toggle-checkboxes" type="checkbox" />
+    <input id="toggle-checkboxes" type="checkbox" checked/>
   </h3>
   <form action="{{ url_for('table_update', table=table, pk=pk) }}" method="post" role="form">
     {% for column in columns %}

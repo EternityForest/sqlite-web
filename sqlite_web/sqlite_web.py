@@ -685,13 +685,29 @@ def table_content(table):
     session["%s.last_viewed" % table] = (page_number, ordering)
 
     field_names = ds_table.columns
-    columns = [f.column_name for f in ds_table.model_class._meta.sorted_fields]
+
+    columns = []
+    col_dict = {}
+    row = {}
+    auto_fields = []
+    
+    for column in dataset.get_columns(table):
+        field = model._meta.columns[column.name]
+        if isinstance(field, peewee.AutoField):
+            auto_fields.append(column.name)
+        columns.append(column)
+        col_dict[column.name] = column
+        row[column.name] = ""
+
+    edited = set()
+    errors = {}
 
     return render_template(
         "table_content.html",
         columns=columns,
         ds_table=ds_table,
         field_names=field_names,
+        auto_fields=auto_fields,
         next_page=next_page,
         ordering=ordering,
         page=page_number,
