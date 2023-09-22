@@ -88,6 +88,7 @@
   {% endif %}
 
 
+  <form id="search" action="{{url_for('table_content', file=file, table=table)}}" method="post"></form>
   <table class="table table-striped small">
     <thead>
       <tr>
@@ -96,10 +97,20 @@
             <a href="./?ordering={% if ordering == column.name %}-{% endif %}{{ column.name }}">{{ column.name }}</a>
           </th>
         {% endfor %}
-        {% if not dataset.is_readonly and table_pk %}<th></th>{% endif %}
+        <th></th>
       </tr>
     </thead>
     <tbody>
+      <tr>
+        {% for column in columns %}
+          <td>
+            <input form="search" name="{{column.name}}" value="{{example.get(column.name,'')}}">
+          </td>
+        {% endfor %}
+        <td><input type="submit" form="search" value="Search"></td>
+      </tr>
+
+
       {% for row in query %}
         <tr>
           {% for field in field_names %}
@@ -112,17 +123,17 @@
               {% endif %}
             </td>
           {% endfor %}
-          {% if not dataset.is_readonly and table_pk %}
             <td>
-              {% set pk = row|encode_pk(table_pk) %}
-              {% if not is_view or 'update' in view_ops %}
-              <a class="small" href="{{ url_for('table_update', table=table, file=file, pk=pk) }}">Edit</a>
-              {% endif %}
-              {% if not is_view or 'delete' in view_ops %}
-              <a class="small" href="{{ url_for('table_delete', table=table, file=file, pk=pk) }}">Delete</a>
+              {% if not dataset.is_readonly and table_pk %}
+                {% set pk = row|encode_pk(table_pk) %}
+                {% if not is_view or 'update' in view_ops %}
+                <a class="small" href="{{ url_for('table_update', table=table, file=file, pk=pk) }}">Edit</a>
+                {% endif %}
+                {% if not is_view or 'delete' in view_ops %}
+                <a class="small" href="{{ url_for('table_delete', table=table, file=file, pk=pk) }}">Delete</a>
+                {% endif %}
               {% endif %}
             </td>
-          {% endif %}
         </tr>
       {% endfor %}
     </tbody>

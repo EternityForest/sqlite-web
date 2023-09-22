@@ -681,7 +681,7 @@ def drop_trigger(file, table):
     )
 
 
-@app.route("/<file>/<table>/")
+@app.route("/<file>/<table>/", methods=["GET", "POST"])
 @require_table
 def table_content(file, table):
     page_number = request.args.get("page") or ""
@@ -719,17 +719,16 @@ def table_content(file, table):
     example = {}
     if request.method == "POST":
         for key, value in request.form.items():
-            if key not in col_dict:
-                continue
-            column = col_dict[key]
-            example[column.name] = value
+            if value:
+                if key not in col_dict:
+                    continue
+                column = col_dict[key]
+                example[column.name] = value
 
-            field = model._meta.columns[column.name]
-            value, err = minimal_validate_field(field, value)
-            if err:
-                raise RuntimeError(err)
-            else:
-                example[field] = value
+                field = model._meta.columns[column.name]
+                value, err = minimal_validate_field(field, value)
+                if err:
+                    raise RuntimeError(err)
 
     if example:    
         query = ds_table.find(**example).paginate(page_number, rows_per_page)
@@ -763,6 +762,7 @@ def table_content(file, table):
         next_page=next_page,
         ordering=ordering,
         page=page_number,
+        example=example,
         previous_page=previous_page,
         query=query,
         table=table,
