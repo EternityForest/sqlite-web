@@ -22,6 +22,7 @@ from flask.logging import create_logger
 
 import peewee
 from peewee import IndexMetadata
+from peewee import fn
 from playhouse.dataset import DataSet
 from playhouse.migrate import migrate
 
@@ -242,7 +243,7 @@ class SqliteDataSet(DataSet):
         virtual_tables = self.get_virtual_tables()
         suffixes = ["content", "docsize", "segdir", "segments", "stat"]
         return set(
-            "%s_%s" % (virtual_table, suffix)
+            f"{virtual_table}_{suffix}"
             for suffix in suffixes
             for virtual_table in virtual_tables
         )
@@ -734,6 +735,17 @@ def table_content(file, table):
         query = ds_table.find(**example).paginate(page_number, rows_per_page)
     else:
         query = ds_table.all().paginate(page_number, rows_per_page)
+    
+    count = query.count()
+    counts ={}
+    if count < 2**14:
+        for i in columns:
+            if model._meta.columns[i.name].field_type in ('REAL','INTEGER', "INT"):
+                 x = query.select(fn.SUM(model._meta.columns[i.name])).scalar()
+                 counts[i.name] = x
+
+
+    
 
     ordering = request.args.get("ordering")
     if ordering:
@@ -755,6 +767,7 @@ def table_content(file, table):
         "table_content.html",
         file=file,
         columns=columns,
+        counts= counts,
         dataset=dataset,
         ds_table=ds_table,
         field_names=field_names,

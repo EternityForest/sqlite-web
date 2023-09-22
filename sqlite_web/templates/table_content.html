@@ -94,7 +94,7 @@
       <tr>
         {% for column in columns %}
           <th>
-            <a href="./?ordering={% if ordering == column.name %}-{% endif %}{{ column.name }}">{{ column.name }}</a>
+            <a href="./?ordering={% if ordering == column.name %}-{% endif %}{{ column.name }}">{{ column.name }}{% if column.name in counts %}({{counts[column.name]}}){% endif %}</a>
           </th>
         {% endfor %}
         <th></th>
