@@ -504,7 +504,7 @@ def drop_column(file, table):
     request_data = get_request_data()
     name = request_data.get("name", "")
     dataset = get_dataset(file)
-    columns = dataset.get_columns(table)
+    columns = dataset.get_columns(file, table)
     column_names = [column.name for column in columns]
 
     if request.method == "POST":
@@ -584,7 +584,7 @@ def add_index(file, table):
     request_data = get_request_data()
     indexed_columns = request_data.getlist("indexed_columns")
     unique = bool(request_data.get("unique"))
-
+    dataset = get_dataset(file)
     columns = get_dataset(file).get_columns(file, table)
 
     if request.method == "POST":
@@ -620,8 +620,9 @@ def add_index(file, table):
 def drop_index(file, table):
     request_data = get_request_data()
     name = request_data.get("name", "")
-    indexes = get_dataset(file).get_indexes(table)
+    indexes = get_dataset(file).get_indexes(file,table)
     index_names = [index.name for index in indexes]
+    dataset = get_dataset(file)
 
     if request.method == "POST":
         if name in index_names:
@@ -702,19 +703,6 @@ def table_content(file, table):
     previous_page = page_number - 1 if page_number > 1 else None
     next_page = page_number + 1 if page_number < total_pages else None
 
-    query = ds_table.all().paginate(page_number, rows_per_page)
-
-    ordering = request.args.get("ordering")
-    if ordering:
-        field = model._meta.columns[ordering.lstrip("-")]
-        if ordering.startswith("-"):
-            field = field.desc()
-        query = query.order_by(field)
-
-    session["%s.last_viewed" % table] = (page_number, ordering)
-
-    field_names = ds_table.columns
-
     columns = []
     col_dict = {}
     row = {}
@@ -727,6 +715,39 @@ def table_content(file, table):
         columns.append(column)
         col_dict[column.name] = column
         row[column.name] = ""
+    
+    example = {}
+    if request.method == "POST":
+        for key, value in request.form.items():
+            if key not in col_dict:
+                continue
+            column = col_dict[key]
+            example[column.name] = value
+
+            field = model._meta.columns[column.name]
+            value, err = minimal_validate_field(field, value)
+            if err:
+                raise RuntimeError(err)
+            else:
+                example[field] = value
+
+    if example:    
+        query = ds_table.find(**example).paginate(page_number, rows_per_page)
+    else:
+        query = ds_table.all().paginate(page_number, rows_per_page)
+
+    ordering = request.args.get("ordering")
+    if ordering:
+        field = model._meta.columns[ordering.lstrip("-")]
+        if ordering.startswith("-"):
+            field = field.desc()
+        query = query.order_by(field)
+
+    session["%s.last_viewed" % table] = (page_number, ordering)
+
+    field_names = ds_table.columns
+
+
 
     edited = set()
     errors = {}
@@ -1258,6 +1279,15 @@ def _now():
 @app.before_request
 def _connect_db():
     get_dataset().connect()
+
+
+@app.before_request
+def _check_csrf():
+    if 'Origin' in request.headers:
+        if request.headers['Origin']:
+            if not request.headers['Origin'].split("//")[-1] == request.host:
+                raise RuntimeError("CSRF not allowed")
+
 
 
 @app.teardown_request
