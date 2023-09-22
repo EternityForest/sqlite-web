@@ -20,22 +20,17 @@ from io import TextIOWrapper
 from logging.handlers import WatchedFileHandler
 from flask.logging import create_logger
 
-# Py2k compat.
-if sys.version_info[0] == 2:
-    PY2 = True
-    binary_types = (buffer, bytes, bytearray)
-    decode_handler = "replace"
-    numeric = (int, long, float)
-    unicode_type = unicode
-    from StringIO import StringIO
-else:
-    PY2 = False
-    binary_types = (bytes, bytearray)
-    decode_handler = "backslashreplace"
-    numeric = (int, float)
-    unicode_type = str
-    from functools import reduce
-    from io import StringIO
+import peewee
+from peewee import IndexMetadata
+from playhouse.dataset import DataSet
+from playhouse.migrate import migrate
+
+from functools import reduce
+from io import StringIO
+
+binary_types = (bytes, bytearray)
+decode_handler = "backslashreplace"
+
 
 try:
     from flask import (
@@ -70,6 +65,7 @@ except ImportError:
 
     def syntax_highlight(data):
         return "<pre>%s</pre>" % data
+
 else:
 
     def syntax_highlight(data):
@@ -97,11 +93,6 @@ else:
             "peewee" % __version__
         )
 
-import peewee
-from peewee import IndexMetadata
-from playhouse.dataset import DataSet
-from playhouse.migrate import migrate
-
 
 CUR_DIR = os.path.realpath(os.path.dirname(__file__))
 DEBUG = False
@@ -118,8 +109,11 @@ app.config.from_object(__name__)
 LOG = create_logger(app)
 
 _dataset = None
+all_open_datasets = []
+open_datasets_lock = threading.Lock()
 
-def get_dataset():
+
+def get_dataset(file=None):
     "Return the relevant dataset for this request"
     return _dataset
 
@@ -169,8 +163,8 @@ class SqliteDataSet(DataSet):
         stat = os.stat(self.filename)
         return stat.st_size
 
-    def get_indexes(self, table):
-        dataset = get_dataset()
+    def get_indexes(self, file, table):
+        dataset = get_dataset(file)
         return dataset._database.get_indexes(table)
 
     def get_all_indexes(self):
@@ -178,21 +172,23 @@ class SqliteDataSet(DataSet):
             "SELECT name, sql FROM sqlite_master WHERE type = ? ORDER BY name",
             ("index",),
         )
+        d = cursor.fetchall()
         return [
-            IndexMetadata(row[0], row[1], None, None, None) for row in cursor.fetchall()
+            IndexMetadata(row[0], row[1], None, None, None) for row in d
         ]
 
-    def get_columns(self, table):
-        dataset = get_dataset()
+    def get_columns(self, file, table):
+        dataset = get_dataset(file)
         return dataset._database.get_columns(table)
 
-    def get_foreign_keys(self, table):
-        dataset = get_dataset()
+    def get_foreign_keys(self, file, table):
+        dataset = get_dataset(file)
         return dataset._database.get_foreign_keys(table)
 
     def get_triggers(self, table):
         cursor = self.query(
-            "SELECT name, sql FROM sqlite_master WHERE type = ? AND tbl_name = ?",
+            """SELECT name, sql FROM sqlite_master
+            WHERE type = ? AND tbl_name = ?""",
             ("trigger", table),
         )
         return [TriggerMetadata(*row) for row in cursor.fetchall()]
@@ -204,8 +200,8 @@ class SqliteDataSet(DataSet):
         )
         return [TriggerMetadata(*row) for row in cursor.fetchall()]
 
-    def get_table_sql(self, table):
-        dataset = get_dataset()
+    def get_table_sql(self, file, table):
+        dataset = get_dataset(file)
         if not table:
             return
 
@@ -278,10 +274,24 @@ class SqliteDataSet(DataSet):
 # Flask views.
 #
 
-
 @app.route("/")
-def index():
-    return render_template("index.html", sqlite=peewee.sqlite3)
+def file_select(file=None):
+    return render_template(
+        "index.html",
+        sqlite=peewee.sqlite3,
+        file=file or "default",
+        dataset=get_dataset(file),
+    )
+
+
+@app.route("/<file>/")
+def index(file=None):
+    return render_template(
+        "table_home.html",
+        sqlite=peewee.sqlite3,
+        file=file or "default",
+        dataset=get_dataset(file),
+    )
 
 
 @app.route("/login/", methods=["GET", "POST"])
@@ -291,9 +301,7 @@ def login():
             session["authorized"] = True
             return redirect(session.get("next_url") or url_for("index"))
         flash("The password you entered is incorrect.", "danger")
-        LOG.debug(
-            "Received incorrect password attempt from %s" % request.remote_addr
-        )
+        LOG.debug("Received incorrect password attempt from %s" % request.remote_addr)
     return render_template("login.html")
 
 
@@ -303,8 +311,8 @@ def logout():
     return redirect(url_for("login"))
 
 
-def _query_view(template, table=None):
-    dataset = get_dataset()
+def _query_view(template, file, table=None):
+    dataset = get_dataset(file)
 
     data = []
     data_description = error = row_count = sql = None
@@ -366,27 +374,29 @@ def _query_view(template, table=None):
         row_count=row_count,
         sql=sql,
         table=table,
-        table_sql=dataset.get_table_sql(table),
+        file=file,
+        dataset=dataset,
+        table_sql=dataset.get_table_sql(file, table),
     )
 
 
-@app.route("/query/", methods=["GET"])
-def generic_query():
-    return _query_view("query.html")
+@app.route("/<file>/query/", methods=["GET"])
+def generic_query(file):
+    return _query_view("query.html", file)
 
 
 def require_table(fn):
     @wraps(fn)
-    def inner(table, *args, **kwargs):
-        if table not in get_dataset().tables:
+    def inner(file, table, *args, **kwargs):
+        if table not in get_dataset(file).tables:
             abort(404)
-        return fn(table, *args, **kwargs)
+        return fn(file, table, *args, **kwargs)
 
     return inner
 
 
-@app.route("/create-table/", methods=["POST"])
-def table_create():
+@app.route("/<file>/create-table/", methods=["POST"])
+def table_create(file):
     table = (request.form.get("table_name") or "").strip()
     if not table:
         flash("Table name is required.", "danger")
@@ -396,29 +406,31 @@ def table_create():
         return redirect(dest)
 
     try:
-        get_dataset()[table]
+        get_dataset(file)[table]
     except Exception as exc:
         flash("Error: %s" % str(exc), "danger")
         LOG.exception("Error attempting to create table.")
-    return redirect(url_for("table_import", table=table))
+    return redirect(url_for("table_import", table=table, file=file))
 
 
-@app.route("/<table>/structure")
+@app.route("/<file>/<table>/structure")
 @require_table
-def table_structure(table):
-    dataset = get_dataset()
+def table_structure(file, table):
+    dataset = get_dataset(file)
     ds_table = dataset[table]
     model_class = ds_table.model_class
 
     return render_template(
         "table_structure.html",
-        columns=dataset.get_columns(table),
+        file=file,
+        dataset=dataset,
+        columns=dataset.get_columns(file, table),
         ds_table=ds_table,
-        foreign_keys=dataset.get_foreign_keys(table),
-        indexes=dataset.get_indexes(table),
+        foreign_keys=dataset.get_foreign_keys(file, table),
+        indexes=dataset.get_indexes(file, table),
         model_class=model_class,
         table=table,
-        table_sql=dataset.get_table_sql(table),
+        table_sql=dataset.get_table_sql(file, table),
         triggers=dataset.get_triggers(table),
     )
 
@@ -429,9 +441,9 @@ def get_request_data():
     return request.args
 
 
-@app.route("/<table>/add-column/", methods=["GET", "POST"])
+@app.route("/<file>/<table>/add-column/", methods=["GET", "POST"])
 @require_table
-def add_column(table):
+def add_column(file, table):
     class JsonField(peewee.TextField):
         field_type = "JSON"
 
@@ -454,13 +466,13 @@ def add_column(table):
     request_data = get_request_data()
     col_type = request_data.get("type")
     name = request_data.get("name", "")
-    dataset = get_dataset()
+    dataset = get_dataset(file)
 
     if request.method == "POST":
         if name and col_type in column_mapping:
             try:
                 migrate(
-                    get_dataset()._migrator.add_column(
+                    dataset._migrator.add_column(
                         table, name, column_mapping[col_type](null=True)
                     )
                 )
@@ -470,33 +482,35 @@ def add_column(table):
             else:
                 flash('Column "%s" was added successfully!' % name, "success")
                 dataset.update_cache(table)
-                return redirect(url_for("table_structure", table=table))
+                return redirect(url_for("table_structure", file=file, table=table))
         else:
             flash("Name and column type are required.", "danger")
 
     return render_template(
         "add_column.html",
+        file=file,
+        dataset=dataset,
         col_type=col_type,
         column_mapping=column_mapping,
         name=name,
         table=table,
-        table_sql=dataset.get_table_sql(table),
+        table_sql=dataset.get_table_sql(file, table),
     )
 
 
-@app.route("/<table>/drop-column/", methods=["GET", "POST"])
+@app.route("/<file>/<table>/drop-column/", methods=["GET", "POST"])
 @require_table
-def drop_column(table):
+def drop_column(file, table):
     request_data = get_request_data()
     name = request_data.get("name", "")
-    dataset = get_dataset()
+    dataset = get_dataset(file)
     columns = dataset.get_columns(table)
     column_names = [column.name for column in columns]
 
     if request.method == "POST":
         if name in column_names:
             try:
-                migrate(get_dataset()._migrator.drop_column(table, name))
+                migrate(dataset._migrator.drop_column(table, name))
             except Exception as exc:
                 flash(
                     'Error attempting to drop column "%s": %s' % (name, exc), "danger"
@@ -505,12 +519,14 @@ def drop_column(table):
             else:
                 flash('Column "%s" was dropped successfully!' % name, "success")
                 dataset.update_cache(table)
-                return redirect(url_for("table_structure", table=table))
+                return redirect(url_for("table_structure", file=file, table=table))
         else:
             flash("Name is required.", "danger")
 
     return render_template(
         "drop_column.html",
+        file=file,
+        dataset=dataset,
         columns=columns,
         column_names=column_names,
         name=name,
@@ -518,30 +534,31 @@ def drop_column(table):
     )
 
 
-@app.route("/<table>/rename-column/", methods=["GET", "POST"])
+@app.route("/<file>/<table>/rename-column/", methods=["GET", "POST"])
 @require_table
-def rename_column(table):
+def rename_column(file, table):
     request_data = get_request_data()
     rename = request_data.get("rename", "")
     rename_to = request_data.get("rename_to", "")
-    dataset = get_dataset()
+    dataset = get_dataset(file)
 
-    columns = dataset.get_columns(table)
+    columns = dataset.get_columns(file, table)
     column_names = [column.name for column in columns]
 
     if request.method == "POST":
         if (rename in column_names) and (rename_to not in column_names):
             try:
-                migrate(get_dataset()._migrator.rename_column(table, rename, rename_to))
+                migrate(dataset._migrator.rename_column(table, rename, rename_to))
             except Exception as exc:
                 flash(
-                    'Error attempting to rename column "%s": %s' % (rename, exc), "danger"
+                    'Error attempting to rename column "%s": %s' % (rename, exc),
+                    "danger",
                 )
                 LOG.exception("Error attempting to rename column.")
             else:
                 flash('Column "%s" was renamed successfully!' % rename, "success")
                 dataset.update_cache(table)
-                return redirect(url_for("table_structure", table=table))
+                return redirect(url_for("table_structure", file=file, table=table))
         else:
             flash(
                 "Column name is required and cannot conflict with an "
@@ -551,6 +568,8 @@ def rename_column(table):
 
     return render_template(
         "rename_column.html",
+        file=file,
+        dataset=dataset,
         columns=columns,
         column_names=column_names,
         rename=rename,
@@ -559,30 +578,36 @@ def rename_column(table):
     )
 
 
-@app.route("/<table>/add-index/", methods=["GET", "POST"])
+@app.route("/<file>/<table>/add-index/", methods=["GET", "POST"])
 @require_table
-def add_index(table):
+def add_index(file, table):
     request_data = get_request_data()
     indexed_columns = request_data.getlist("indexed_columns")
     unique = bool(request_data.get("unique"))
 
-    columns = get_dataset().get_columns(table)
+    columns = get_dataset(file).get_columns(file, table)
 
     if request.method == "POST":
         if indexed_columns:
             try:
-                migrate(get_dataset()._migrator.add_index(table, indexed_columns, unique))
+                migrate(
+                    get_dataset(file)._migrator.add_index(
+                        table, indexed_columns, unique
+                    )
+                )
             except Exception as exc:
                 flash("Error attempting to create index: %s" % exc, "danger")
                 LOG.exception("Error attempting to create index.")
             else:
                 flash("Index created successfully.", "success")
-                return redirect(url_for("table_structure", table=table))
+                return redirect(url_for("table_structure", file=file, table=table))
         else:
             flash("One or more columns must be selected.", "danger")
 
     return render_template(
         "add_index.html",
+        file=file,
+        dataset=dataset,
         columns=columns,
         indexed_columns=indexed_columns,
         table=table,
@@ -590,29 +615,31 @@ def add_index(table):
     )
 
 
-@app.route("/<table>/drop-index/", methods=["GET", "POST"])
+@app.route("/<file>/<table>/drop-index/", methods=["GET", "POST"])
 @require_table
-def drop_index(table):
+def drop_index(file, table):
     request_data = get_request_data()
     name = request_data.get("name", "")
-    indexes = get_dataset().get_indexes(table)
+    indexes = get_dataset(file).get_indexes(table)
     index_names = [index.name for index in indexes]
 
     if request.method == "POST":
         if name in index_names:
             try:
-                migrate(get_dataset()._migrator.drop_index(table, name))
+                migrate(indexes._migrator.drop_index(table, name))
             except Exception as exc:
                 flash("Error attempting to drop index: %s" % exc, "danger")
                 LOG.exception("Error attempting to drop index.")
             else:
                 flash('Index "%s" was dropped successfully!' % name, "success")
-                return redirect(url_for("table_structure", table=table))
+                return redirect(url_for("table_structure", file=file, table=table))
         else:
             flash("Index name is required.", "danger")
 
     return render_template(
         "drop_index.html",
+        file=file,
+        dataset=dataset,
         indexes=indexes,
         index_names=index_names,
         name=name,
@@ -620,12 +647,12 @@ def drop_index(table):
     )
 
 
-@app.route("/<table>/drop-trigger/", methods=["GET", "POST"])
+@app.route("/<file>/<table>/drop-trigger/", methods=["GET", "POST"])
 @require_table
-def drop_trigger(table):
+def drop_trigger(file, table):
     request_data = get_request_data()
     name = request_data.get("name", "")
-    dataset = get_dataset()
+    dataset = get_dataset(file)
     triggers = dataset.get_triggers(table)
     trigger_names = [trigger.name for trigger in triggers]
 
@@ -638,12 +665,14 @@ def drop_trigger(table):
                 LOG.exception("Error attempting to drop trigger.")
             else:
                 flash('Trigger "%s" was dropped successfully!' % name, "success")
-                return redirect(url_for("table_structure", table=table))
+                return redirect(url_for("table_structure", table=table, file=file))
         else:
             flash("Trigger name is required.", "danger")
 
     return render_template(
         "drop_trigger.html",
+        file=file,
+        dataset=dataset,
         triggers=triggers,
         trigger_names=trigger_names,
         name=name,
@@ -651,14 +680,14 @@ def drop_trigger(table):
     )
 
 
-@app.route("/<table>/")
+@app.route("/<file>/<table>/")
 @require_table
-def table_content(table):
+def table_content(file, table):
     page_number = request.args.get("page") or ""
     if page_number == "last":
         page_number = "1000000"
     page_number = int(page_number) if page_number.isdigit() else 1
-    dataset = get_dataset()
+    dataset = get_dataset(file)
     dataset.update_cache(table)
     ds_table = dataset[table]
     model = ds_table.model_class
@@ -690,8 +719,8 @@ def table_content(table):
     col_dict = {}
     row = {}
     auto_fields = []
-    
-    for column in dataset.get_columns(table):
+
+    for column in dataset.get_columns(file, table):
         field = model._meta.columns[column.name]
         if isinstance(field, peewee.AutoField):
             auto_fields.append(column.name)
@@ -704,7 +733,9 @@ def table_content(table):
 
     return render_template(
         "table_content.html",
+        file=file,
         columns=columns,
+        dataset=dataset,
         ds_table=ds_table,
         field_names=field_names,
         auto_fields=auto_fields,
@@ -715,7 +746,7 @@ def table_content(table):
         query=query,
         table=table,
         table_pk=model._meta.primary_key,
-        table_sql=dataset.get_table_sql(table),
+        table_sql=dataset.get_table_sql(file, table),
         total_pages=total_pages,
         total_rows=total_rows,
     )
@@ -752,17 +783,17 @@ def minimal_validate_field(field, value):
     return value, None
 
 
-@app.route("/<table>/insert/", methods=["GET", "POST"])
+@app.route("/<file>/<table>/insert/", methods=["GET", "POST"])
 @require_table
-def table_insert(table):
-    dataset = get_dataset()
+def table_insert(file, table):
+    dataset = get_dataset(file)
     dataset.update_cache(table)
     model = dataset[table].model_class
 
     columns = []
     col_dict = {}
     row = {}
-    for column in dataset.get_columns(table):
+    for column in dataset.get_columns(file, table):
         field = model._meta.columns[column.name]
         if isinstance(field, peewee.AutoField):
             continue
@@ -799,7 +830,7 @@ def table_insert(table):
                 LOG.exception("Error attempting to insert row into %s.", table)
             else:
                 flash("Successfully inserted record (%s)." % n, "success")
-                return redirect(url_for("table_content", table=table, page="last"))
+                return redirect(url_for("table_content", file=file, table=table, page="last"))
         else:
             flash("No data was specified to be inserted.", "warning")
     else:
@@ -807,6 +838,7 @@ def table_insert(table):
 
     return render_template(
         "table_insert.html",
+        file=file,
         columns=columns,
         edited=edited,
         errors=errors,
@@ -816,32 +848,32 @@ def table_insert(table):
     )
 
 
-def redirect_to_previous(table):
+def redirect_to_previous(file, table):
     page_ordering = session.get("%s.last_viewed" % table)
     if not page_ordering:
-        return redirect(url_for("table_content", table=table))
+        return redirect(url_for("table_content", file=file, table=table))
     page, ordering = page_ordering
     kw = {}
     if page and page != 1:
         kw["page"] = page
     if ordering:
         kw["ordering"] = ordering
-    return redirect(url_for("table_content", table=table, **kw))
+    return redirect(url_for("table_content", file=file, table=table, **kw))
 
 
-@app.route("/<table>/update/<pk>/", methods=["GET", "POST"])
+@app.route("/<file>/<table>/update/<pk>/", methods=["GET", "POST"])
 @require_table
-def table_update(table, pk):
-    dataset = get_dataset()
+def table_update(file, table, pk):
+    dataset = get_dataset(file)
     dataset.update_cache(table)
     model = dataset[table].model_class
     table_pk = model._meta.primary_key
     if not table_pk:
         flash("Table must have a primary key to perform update.", "danger")
-        return redirect(url_for("table_content", table=table))
+        return redirect(url_for("table_content", file=file, table=table))
     elif pk == "__uneditable__":
         flash("Could not encode primary key to perform update.", "danger")
-        return redirect(url_for("table_content", table=table))
+        return redirect(url_for("table_content", file=file, table=table))
 
     expr = decode_pk(model, pk)
     try:
@@ -849,9 +881,9 @@ def table_update(table, pk):
     except model.DoesNotExist:
         pk_repr = pk_display(table_pk, pk)
         flash("Could not fetch row with primary-key %s." % str(pk_repr), "danger")
-        return redirect(url_for("table_content", table=table))
+        return redirect(url_for("table_content", file=file, table=table))
 
-    columns = dataset.get_columns(table)
+    columns = dataset.get_columns(file, table)
     col_dict = {}
     row = {}
     for column in columns:
@@ -894,12 +926,14 @@ def table_update(table, pk):
                 LOG.exception("Error attempting to update row from %s.", table)
             else:
                 flash("Successfully updated %s record." % n, "success")
-                return redirect_to_previous(table)
+                return redirect_to_previous(file,table)
         else:
             flash("No data was specified to be updated.", "warning")
 
     return render_template(
         "table_update.html",
+        file=file,
+        dataset=dataset,
         columns=columns,
         edited=edited,
         errors=errors,
@@ -911,19 +945,19 @@ def table_update(table, pk):
     )
 
 
-@app.route("/<table>/delete/<pk>/", methods=["GET", "POST"])
+@app.route("/<file>/<table>/delete/<pk>/", methods=["GET", "POST"])
 @require_table
-def table_delete(table, pk):
-    dataset = get_dataset()
+def table_delete(file, table, pk):
+    dataset = get_dataset(file)
     dataset.update_cache(table)
     model = dataset[table].model_class
     table_pk = model._meta.primary_key
     if not table_pk:
         flash("Table must have a primary key to perform delete.", "danger")
-        return redirect(url_for("table_content", table=table))
+        return redirect(url_for("table_content", file=file, table=table))
     elif pk == "__uneditable__":
         flash("Could not encode primary key to perform delete.", "danger")
-        return redirect(url_for("table_content", table=table))
+        return redirect(url_for("table_content", file=file, table=table))
 
     expr = decode_pk(model, pk)
     try:
@@ -931,7 +965,7 @@ def table_delete(table, pk):
     except model.DoesNotExist:
         pk_repr = pk_display(table_pk, pk)
         flash("Could not fetch row with primary-key %s." % str(pk_repr), "danger")
-        return redirect(url_for("table_content", table=table))
+        return redirect(url_for("table_content", file=file, table=table))
 
     if request.method == "POST":
         try:
@@ -942,11 +976,13 @@ def table_delete(table, pk):
             LOG.exception("Error attempting to delete row from %s.", table)
         else:
             flash("Successfully deleted %s record." % n, "success")
-            return redirect_to_previous(table)
+            return redirect_to_previous(file, table)
 
     return render_template(
         "table_delete.html",
-        column_names=[c.name for c in dataset.get_columns(table)],
+        column_names=[c.name for c in dataset.get_columns(file, table)],
+        file=file,
+        dataset=dataset,
         model=model,
         pk=pk,
         row=row,
@@ -955,10 +991,10 @@ def table_delete(table, pk):
     )
 
 
-@app.route("/<table>/query/", methods=["GET"])
+@app.route("/<file>/<table>/query/", methods=["GET"])
 @require_table
-def table_query(table):
-    return _query_view("table_query.html", table)
+def table_query(file, table):
+    return _query_view("table_query.html", file, table)
 
 
 def export(query, export_format, table=None):
@@ -990,11 +1026,11 @@ def export(query, export_format, table=None):
     return response
 
 
-@app.route("/<table>/export/", methods=["GET", "POST"])
+@app.route("/<file>/<table>/export/", methods=["GET", "POST"])
 @require_table
-def table_export(table):
-    dataset = get_dataset()
-    columns = dataset.get_columns(table)
+def table_export(file, table):
+    dataset = get_dataset(file)
+    columns = dataset.get_columns(file, table)
     if request.method == "POST":
         export_format = request.form.get("export_format") or "json"
         col_dict = {c.name: c for c in columns}
@@ -1011,17 +1047,18 @@ def table_export(table):
                 flash("Error generating export: %s" % exc, "danger")
                 LOG.exception("Error generating export.")
 
-    return render_template("table_export.html", columns=columns, table=table)
+    return render_template(
+        "table_export.html", columns=columns, table=table, file=file, dataset=dataset
+    )
 
 
-@app.route("/<table>/import/", methods=["GET", "POST"])
+@app.route("/<file>/<table>/import/", methods=["GET", "POST"])
 @require_table
-def table_import(table):
+def table_import(file, table):
     count = None
-    dataset = get_dataset()
+    dataset = get_dataset(file)
     request_data = get_request_data()
     strict = bool(request_data.get("strict"))
-    dataset = get_dataset()
     if request.method == "POST":
         file_obj = request.files.get("file")
         if not file_obj:
@@ -1039,17 +1076,14 @@ def table_import(table):
             # compatible with Python's CSV module. We'd need to reach pretty
             # far into Flask's internals to modify this behavior, so instead
             # we'll just translate the stream into utf8-decoded unicode.
-            if not PY2:
-                try:
-                    stream = TextIOWrapper(file_obj, encoding="utf8")
-                except AttributeError:
-                    # The SpooledTemporaryFile used by werkzeug does not
-                    # implement an API that the TextIOWrapper expects, so we'll
-                    # just consume the whole damn thing and decode it.
-                    # Fixed in werkzeug 0.15.
-                    stream = StringIO(file_obj.read().decode("utf8"))
-            else:
-                stream = file_obj.stream
+            try:
+                stream = TextIOWrapper(file_obj, encoding="utf8")
+            except AttributeError:
+                # The SpooledTemporaryFile used by werkzeug does not
+                # implement an API that the TextIOWrapper expects, so we'll
+                # just consume the whole damn thing and decode it.
+                # Fixed in werkzeug 0.15.
+                stream = StringIO(file_obj.read().decode("utf8"))
 
             try:
                 with dataset.transaction():
@@ -1065,15 +1099,22 @@ def table_import(table):
                     % (count, file_obj.filename),
                     "success",
                 )
-                return redirect(url_for("table_content", table=table))
+                return redirect(url_for("table_content", file=file, table=table))
 
-    return render_template("table_import.html", count=count, strict=strict, table=table)
+    return render_template(
+        "table_import.html",
+        count=count,
+        strict=strict,
+        table=table,
+        file=file,
+        dataset=dataset,
+    )
 
 
-@app.route("/<table>/drop/", methods=["GET", "POST"])
+@app.route("/<file>/<table>/drop/", methods=["GET", "POST"])
 @require_table
-def drop_table(table):
-    dataset = get_dataset()
+def drop_table(file, table):
+    dataset = get_dataset(file)
     is_view = any(v.name == table for v in dataset.get_all_views())
     label = "view" if is_view else "table"
     if request.method == "POST":
@@ -1093,9 +1134,11 @@ def drop_table(table):
                 % ("view" if is_view else "table", table),
                 "success",
             )
-            return redirect(url_for("index"))
+            return redirect(url_for("index", file=file,))
 
-    return render_template("drop_table.html", is_view=is_view, table=table)
+    return render_template(
+        "drop_table.html", is_view=is_view, table=table, file=file, dataset=dataset
+    )
 
 
 @app.template_filter("format_index")
@@ -1137,14 +1180,14 @@ def pk_display(table_pk, pk):
 
 @app.template_filter("value_filter")
 def value_filter(value, max_length=50):
-    if isinstance(value, numeric):
+    if isinstance(value, (int, float)):
         return value
 
     if isinstance(value, binary_types):
         if not isinstance(value, (bytes, bytearray)):
             value = bytes(value)  # Handle `buffer` type.
         value = base64.b64encode(value)[:1024].decode("utf8")
-    if isinstance(value, unicode_type):
+    if isinstance(value, str):
         value = escape(value)
         if len(value) > max_length:
             return (
@@ -1202,7 +1245,7 @@ def get_query_images():
 @app.context_processor
 def _general():
     return {
-        "dataset": get_dataset(),
+        # "dataset": get_dataset(file),
         "login_required": bool(app.config.get("PASSWORD")),
     }
 
@@ -1219,9 +1262,10 @@ def _connect_db():
 
 @app.teardown_request
 def _close_db(exc):
-    dataset = get_dataset()
-    if not dataset._database.is_closed():
-        dataset.close()
+    with open_datasets_lock:
+        for dataset in all_open_datasets:
+            if not dataset._database.is_closed():
+                dataset.close()
 
 
 class PrefixMiddleware(object):
@@ -1388,6 +1432,8 @@ def initialize_app(
         _dataset = SqliteDataSet(
             "sqlite:///%s" % filename, bare_fields=True, **dataset_kw
         )
+        with open_datasets_lock:
+            all_open_datasets.append(_dataset)
 
     if url_prefix:
         app.wsgi_app = PrefixMiddleware(app.wsgi_app, prefix=url_prefix)
@@ -1397,6 +1443,7 @@ def initialize_app(
             _dataset._database.load_extension(ext)
 
     _dataset.close()
+    all_open_datasets.remove(_dataset)
 
 
 def main():

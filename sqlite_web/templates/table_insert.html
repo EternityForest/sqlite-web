@@ -6,7 +6,7 @@
   <h3>Insert row into {{table }}
     <input checked="checked" id="toggle-checkboxes" type="checkbox" />
   </h3>
-  <form action="{{ url_for('table_insert', table=table) }}" method="post" role="form">
+  <form action="{{ url_for('table_insert', file=file, table=table) }}" method="post" role="form">
     {% for column in columns %}
       <div class="form-group row">
         <label for="id_{{ column.name }}" class="col-sm-2 col-form-label">{{ column.name }}</label>
@@ -37,6 +37,6 @@
       </div>
     {% endfor %}
     <button class="btn btn-primary" type="submit">Insert</button>
-    <a class="btn btn-secondary" href="{{ url_for('table_content', table=table) }}">Cancel</a>
+    <a class="btn btn-secondary" href="{{ url_for('table_content', file=file, table=table) }}">Cancel</a>
   </form>
 {% endblock %}

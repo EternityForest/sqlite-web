@@ -75,7 +75,7 @@
     {% if not data %}
       <p>Empty result set.</p>
     {% else %}
-      <a class="float-right" href="{{ url_for('table_query', table=table, sql=sql) }}{% if ordering %}&ordering={{ ordering }}{% endif %}">Permalink</a>
+      <a class="float-right" href="{{ url_for('table_query', file=file, table=table, sql=sql) }}{% if ordering %}&ordering={{ ordering }}{% endif %}">Permalink</a>
       <h3>
         Results ({{ data|length }})
       </h3>
@@ -84,7 +84,7 @@
           <tr>
             {% for col_desc in data_description %}
               <th>
-                <a class="sort-header" href="{{ url_for('table_query', table=table, sql=sql) }}&ordering={% if loop.index == ordering %}-{% endif %}{{ loop.index }}">{{ col_desc[0] }}{% if ordering is not none %}{% if loop.index == ordering %}&#9660;{% elif loop.index == -ordering %}&#9650;{% endif %}{% endif %}</a>
+                <a class="sort-header" href="{{ url_for('table_query',file=file, table=table, sql=sql) }}&ordering={% if loop.index == ordering %}-{% endif %}{{ loop.index }}">{{ col_desc[0] }}{% if ordering is not none %}{% if loop.index == ordering %}&#9660;{% elif loop.index == -ordering %}&#9650;{% endif %}{% endif %}</a>
               </th>
             {% endfor %}
           </tr>

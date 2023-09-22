@@ -13,7 +13,7 @@
   <h3>Insert row into {{table }}
   </h3>
   {% if not dataset.is_readonly and (not is_view or 'insert' in view_ops) %}
-  <form action="{{ url_for('table_insert', table=table) }}" method="post" role="form">
+  <form action="{{ url_for('table_insert', file=file, table=table) }}" method="post" role="form">
     <details>
       <summary>Advanced</summary>
       {% for column in columns %}
@@ -116,10 +116,10 @@
             <td>
               {% set pk = row|encode_pk(table_pk) %}
               {% if not is_view or 'update' in view_ops %}
-              <a class="small" href="{{ url_for('table_update', table=table, pk=pk) }}">Edit</a>
+              <a class="small" href="{{ url_for('table_update', table=table, file=file, pk=pk) }}">Edit</a>
               {% endif %}
               {% if not is_view or 'delete' in view_ops %}
-              <a class="small" href="{{ url_for('table_delete', table=table, pk=pk) }}">Delete</a>
+              <a class="small" href="{{ url_for('table_delete', table=table, file=file, pk=pk) }}">Delete</a>
               {% endif %}
             </td>
           {% endif %}
@@ -130,19 +130,19 @@
   <nav>
     <ul class="pagination">
       <li class="{% if not previous_page %}disabled {% endif %}page-item">
-        <a class="page-link" href="{{ url_for('table_content', table=table, page=1, ordering=ordering) }}">&laquo;</a>
+        <a class="page-link" href="{{ url_for('table_content', table=table, file=file, page=1, ordering=ordering) }}">&laquo;</a>
       </li>
       <li class="{% if not previous_page %}disabled {% endif %}page-item">
-        <a class="page-link" href="{{ url_for('table_content', table=table, page=previous_page, ordering=ordering) }}">&lsaquo;</a>
+        <a class="page-link" href="{{ url_for('table_content', table=table, file=file, page=previous_page, ordering=ordering) }}">&lsaquo;</a>
       </li>
       <li class="page-item disabled">
         <span class="page-link">Page {{ page }} / {{ total_pages }}</span>
       </li>
       <li class="{% if not next_page %}disabled {% endif %}page-item">
-        <a class="page-link" href="{{ url_for('table_content', table=table, page=next_page, ordering=ordering) }}">&rsaquo;</a>
+        <a class="page-link" href="{{ url_for('table_content', table=table, file=file, page=next_page, ordering=ordering) }}">&rsaquo;</a>
       </li>
       <li class="{% if not next_page %}disabled {% endif %}page-item">
-        <a class="page-link" href="{{ url_for('table_content', table=table, page=total_pages, ordering=ordering) }}">&raquo;</a>
+        <a class="page-link" href="{{ url_for('table_content', table=table, file=file, page=total_pages, ordering=ordering) }}">&raquo;</a>
       </li>
     </ul>
   </nav>

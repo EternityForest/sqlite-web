@@ -3,32 +3,32 @@
 {% set view_ops = dataset.view_operations(table) %}
 
 {% block content_title %}
-  <a href="{{ url_for('index') }}">{{ dataset.base_name }}</a> &mdash; <span title="{{ table }}">{{ table|truncate(24, True, leeway=2) }}</span>
+  <a href="{{ url_for('index', file=file) }}">{{ dataset.base_name }}</a> &mdash; <span title="{{ table }}">{{ table|truncate(24, True, leeway=2) }}</span>
 {% endblock %}
 
 {% block content %}
   <ul class="nav nav-tabs">
     <li class="nav-item">
-      <a class="nav-link{% block content_tab_class %}{% endblock %}" href="{{ url_for('table_content', table=table) }}">Content</a>
+      <a class="nav-link{% block content_tab_class %}{% endblock %}" href="{{ url_for('table_content', file=file, table=table) }}">Content</a>
     </li>
     <li class="nav-item">
-      <a class="nav-link{% block structure_tab_class %}{% endblock %}" href="{{ url_for('table_structure', table=table) }}">Structure</a>
+      <a class="nav-link{% block structure_tab_class %}{% endblock %}" href="{{ url_for('table_structure', file=file, table=table) }}">Structure</a>
     </li>
     <li class="nav-item">
-      <a class="nav-link{% block query_tab_class %}{% endblock %}" href="{{ url_for('table_query', table=table) }}">Query</a>
+      <a class="nav-link{% block query_tab_class %}{% endblock %}" href="{{ url_for('table_query', file=file, table=table) }}">Query</a>
     </li>
     {% if not dataset.is_readonly %}
     <li class="nav-item ml-auto">
-      <a class="nav-link{% block drop_tab_class %}{% endblock %}" href="{{ url_for('drop_table', table=table) }}">Drop</a>
+      <a class="nav-link{% block drop_tab_class %}{% endblock %}" href="{{ url_for('drop_table', file=file, table=table) }}">Drop</a>
     </li>
       {% if not is_view or 'insert' in view_ops %}
     <li class="nav-item">
-      <a class="nav-link{% block import_tab_class %}{% endblock %}" href="{{ url_for('table_import', table=table) }}">Import</a>
+      <a class="nav-link{% block import_tab_class %}{% endblock %}" href="{{ url_for('table_import', file=file, table=table) }}">Import</a>
     </li>
       {% endif %}
     {% endif %}
     <li class="nav-item">
-      <a class="nav-link{% block export_tab_class %}{% endblock %}" href="{{ url_for('table_export', table=table) }}">Export</a>
+      <a class="nav-link{% block export_tab_class %}{% endblock %}" href="{{ url_for('table_export', file=file, table=table) }}">Export</a>
     </li>
     {% block inner_nav %}{% endblock %}
   </ul>
