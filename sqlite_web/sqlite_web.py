@@ -174,9 +174,7 @@ class SqliteDataSet(DataSet):
             ("index",),
         )
         d = cursor.fetchall()
-        return [
-            IndexMetadata(row[0], row[1], None, None, None) for row in d
-        ]
+        return [IndexMetadata(row[0], row[1], None, None, None) for row in d]
 
     def get_columns(self, file, table):
         dataset = get_dataset(file)
@@ -274,6 +272,7 @@ class SqliteDataSet(DataSet):
 #
 # Flask views.
 #
+
 
 @app.route("/")
 def file_select(file=None):
@@ -478,24 +477,22 @@ def add_column(file, table):
 
     if not use_default:
         default = None
-    
 
     if request.method == "POST":
         if name and col_type in column_mapping:
             try:
-
                 if not fk_table:
                     col = column_mapping[col_type](null=nullable, default=default)
                 else:
                     fk = dataset._models[fk_table]._meta.fields[fk_field]
-                    col = peewee.ForeignKeyField(dataset._models[fk_table], field=fk, null=nullable, default=default)
-
-
-                migrate(
-                    dataset._migrator.add_column(
-                        table, name, col
+                    col = peewee.ForeignKeyField(
+                        dataset._models[fk_table],
+                        field=fk,
+                        null=nullable,
+                        default=default,
                     )
-                )
+
+                migrate(dataset._migrator.add_column(table, name, col))
             except Exception as exc:
                 flash('Error attempting to add column "%s": %s' % (name, exc), "danger")
                 LOG.exception("Error attempting to add column.")
@@ -640,7 +637,7 @@ def add_index(file, table):
 def drop_index(file, table):
     request_data = get_request_data()
     name = request_data.get("name", "")
-    indexes = get_dataset(file).get_indexes(file,table)
+    indexes = get_dataset(file).get_indexes(file, table)
     index_names = [index.name for index in indexes]
     dataset = get_dataset(file)
 
@@ -728,18 +725,59 @@ def table_content(file, table):
     row = {}
     auto_fields = []
     foreign_key_fields = {}
+    foreign_key_datasets = {}
 
     for column in dataset.get_columns(file, table):
         field = model._meta.columns[column.name]
         if isinstance(field, peewee.AutoField):
             auto_fields.append(column.name)
         if isinstance(field, peewee.ForeignKeyField):
-            foreign_key_fields[column.name] = field.rel_field.column.name
+            foreign_key_fields[column.name] = field
 
         columns.append(column)
         col_dict[column.name] = column
         row[column.name] = ""
-    
+
+    for idx, foreignkeyfield in foreign_key_fields.items():
+        q = foreignkeyfield.rel_model.select()
+        if q.count() < 256:
+            # We are going to make a summary of the table.
+            # Basically, first try to get something named name or title
+            # then try the first text field, finally try all the fields.
+            include_columns = []
+            for j in field.rel_model._meta.columns:
+                if not j == foreignkeyfield.rel_field.name:
+                    if j in ("name", "title"):
+                        include_columns.append(j)
+
+            for j in field.rel_model._meta.columns:
+                if not j == foreignkeyfield.rel_field.name:
+                    if isinstance(field.rel_model._meta.columns[j], peewee.TextField):
+                        include_columns.append(j)
+
+            for j in field.rel_model._meta.columns:
+                if not j == foreignkeyfield.rel_field.name:
+                    if not isinstance(
+                        field.rel_model._meta.columns[j], peewee.ForeignKeyField
+                    ):
+                        include_columns.append(j)
+
+            foreign_key_datasets[idx] = {}
+
+            for j in q:
+                summary = ""
+                for k in include_columns:
+                    d = str(getattr(j, k))
+                    if (not summary) or (d and (len(d) < len(summary))):
+                        summary = d
+                    if summary and len(summary) < 32:
+                        break
+
+                summary = summary.strip()[:32]
+                # Get the value of what the foreign key points to
+                key = getattr(j, foreignkeyfield.rel_field.name)
+                foreign_key_datasets[idx][key]=summary
+
     example = {}
     if request.method == "POST":
         for key, value in request.form.items():
@@ -754,21 +792,18 @@ def table_content(file, table):
                 if err:
                     raise RuntimeError(err)
 
-    if example:    
+    if example:
         query = ds_table.find(**example).paginate(page_number, rows_per_page)
     else:
         query = ds_table.all().paginate(page_number, rows_per_page)
-    
+
     count = query.count()
-    counts ={}
+    counts = {}
     if count < 2**14:
         for i in columns:
-            if model._meta.columns[i.name].field_type in ('REAL','INTEGER', "INT"):
-                 x = query.select(fn.SUM(model._meta.columns[i.name])).scalar()
-                 counts[i.name] = x
-
-
-    
+            if model._meta.columns[i.name].field_type in ("REAL", "INTEGER", "INT"):
+                x = query.select(fn.SUM(model._meta.columns[i.name])).scalar()
+                counts[i.name] = x
 
     ordering = request.args.get("ordering")
     if ordering:
@@ -783,18 +818,16 @@ def table_content(file, table):
 
 
 
-    edited = set()
-    errors = {}
-
     return render_template(
         "table_content.html",
         file=file,
         columns=columns,
-        counts= counts,
+        counts=counts,
         dataset=dataset,
         ds_table=ds_table,
         field_names=field_names,
         auto_fields=auto_fields,
+        foreign_key_datasets=foreign_key_datasets,
         next_page=next_page,
         ordering=ordering,
         page=page_number,
@@ -806,7 +839,7 @@ def table_content(file, table):
         table_sql=dataset.get_table_sql(file, table),
         total_pages=total_pages,
         total_rows=total_rows,
-        foreign_key_fields=foreign_key_fields
+        foreign_key_fields=foreign_key_fields,
     )
 
 
@@ -888,7 +921,9 @@ def table_insert(file, table):
                 LOG.exception("Error attempting to insert row into %s.", table)
             else:
                 flash("Successfully inserted record (%s)." % n, "success")
-                return redirect(url_for("table_content", file=file, table=table, page="last"))
+                return redirect(
+                    url_for("table_content", file=file, table=table, page="last")
+                )
         else:
             flash("No data was specified to be inserted.", "warning")
     else:
@@ -897,7 +932,7 @@ def table_insert(file, table):
     return render_template(
         "table_insert.html",
         file=file,
-        dataset= dataset,
+        dataset=dataset,
         columns=columns,
         edited=edited,
         errors=errors,
@@ -985,7 +1020,7 @@ def table_update(file, table, pk):
                 LOG.exception("Error attempting to update row from %s.", table)
             else:
                 flash("Successfully updated %s record." % n, "success")
-                return redirect_to_previous(file,table)
+                return redirect_to_previous(file, table)
         else:
             flash("No data was specified to be updated.", "warning")
 
@@ -1193,7 +1228,12 @@ def drop_table(file, table):
                 % ("view" if is_view else "table", table),
                 "success",
             )
-            return redirect(url_for("index", file=file,))
+            return redirect(
+                url_for(
+                    "index",
+                    file=file,
+                )
+            )
 
     return render_template(
         "drop_table.html", is_view=is_view, table=table, file=file, dataset=dataset
@@ -1321,11 +1361,10 @@ def _connect_db():
 
 @app.before_request
 def _check_csrf():
-    if 'Origin' in request.headers:
-        if request.headers['Origin']:
-            if not request.headers['Origin'].split("//")[-1] == request.host:
+    if "Origin" in request.headers:
+        if request.headers["Origin"]:
+            if not request.headers["Origin"].split("//")[-1] == request.host:
                 raise RuntimeError("CSRF not allowed")
-
 
 
 @app.teardown_request
@@ -1476,8 +1515,8 @@ def initialize_app(
 
     if password:
         install_auth_handler(password)
-    pragmas={'foreign_keys': 1}
-    
+    pragmas = {"foreign_keys": 1}
+
     dataset_kw = {}
     if peewee_version >= (3, 14, 9):
         dataset_kw["include_views"] = True
@@ -1487,7 +1526,9 @@ def initialize_app(
             die("Python 3.4.0 or newer is required for read-only access.")
         if peewee_version < (3, 5, 1):
             die("Peewee 3.5.1 or newer is required for read-only access.")
-        db = peewee.SqliteDatabase("file:%s?mode=ro" % filename, uri=True, pragmas=pragmas)
+        db = peewee.SqliteDatabase(
+            "file:%s?mode=ro" % filename, uri=True, pragmas=pragmas
+        )
         try:
             db.connect()
         except peewee.OperationalError:
@@ -1499,8 +1540,7 @@ def initialize_app(
         _dataset = SqliteDataSet(db, bare_fields=True, **dataset_kw)
     else:
         db = peewee.SqliteDatabase("file:%s" % filename, uri=True, pragmas=pragmas)
-        _dataset = SqliteDataSet(db, bare_fields=True, **dataset_kw
-        )
+        _dataset = SqliteDataSet(db, bare_fields=True, **dataset_kw)
         with open_datasets_lock:
             all_open_datasets.append(_dataset)
 
