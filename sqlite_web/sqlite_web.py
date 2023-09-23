@@ -469,12 +469,31 @@ def add_column(file, table):
     name = request_data.get("name", "")
     dataset = get_dataset(file)
 
+    fk_table = request_data.get("fk_table")
+    fk_field = request_data.get("fk_field")
+    nullable = request_data.get("option_null", False)
+
+    use_default = request_data.get("use_default", False)
+    default = request_data.get("default_value")
+
+    if not use_default:
+        default = None
+    
+
     if request.method == "POST":
         if name and col_type in column_mapping:
             try:
+
+                if not fk_table:
+                    col = column_mapping[col_type](null=nullable, default=default)
+                else:
+                    fk = dataset._models[fk_table]._meta.fields[fk_field]
+                    col = peewee.ForeignKeyField(dataset._models[fk_table], field=fk, null=nullable, default=default)
+
+
                 migrate(
                     dataset._migrator.add_column(
-                        table, name, column_mapping[col_type](null=True)
+                        table, name, col
                     )
                 )
             except Exception as exc:
@@ -708,11 +727,15 @@ def table_content(file, table):
     col_dict = {}
     row = {}
     auto_fields = []
+    foreign_key_fields = {}
 
     for column in dataset.get_columns(file, table):
         field = model._meta.columns[column.name]
         if isinstance(field, peewee.AutoField):
             auto_fields.append(column.name)
+        if isinstance(field, peewee.ForeignKeyField):
+            foreign_key_fields[column.name] = field.rel_field.column.name
+
         columns.append(column)
         col_dict[column.name] = column
         row[column.name] = ""
@@ -783,6 +806,7 @@ def table_content(file, table):
         table_sql=dataset.get_table_sql(file, table),
         total_pages=total_pages,
         total_rows=total_rows,
+        foreign_key_fields=foreign_key_fields
     )
 
 
@@ -873,6 +897,7 @@ def table_insert(file, table):
     return render_template(
         "table_insert.html",
         file=file,
+        dataset= dataset,
         columns=columns,
         edited=edited,
         errors=errors,
@@ -1451,7 +1476,8 @@ def initialize_app(
 
     if password:
         install_auth_handler(password)
-
+    pragmas={'foreign_keys': 1}
+    
     dataset_kw = {}
     if peewee_version >= (3, 14, 9):
         dataset_kw["include_views"] = True
@@ -1461,7 +1487,7 @@ def initialize_app(
             die("Python 3.4.0 or newer is required for read-only access.")
         if peewee_version < (3, 5, 1):
             die("Peewee 3.5.1 or newer is required for read-only access.")
-        db = peewee.SqliteDatabase("file:%s?mode=ro" % filename, uri=True)
+        db = peewee.SqliteDatabase("file:%s?mode=ro" % filename, uri=True, pragmas=pragmas)
         try:
             db.connect()
         except peewee.OperationalError:
@@ -1472,8 +1498,8 @@ def initialize_app(
         db.close()
         _dataset = SqliteDataSet(db, bare_fields=True, **dataset_kw)
     else:
-        _dataset = SqliteDataSet(
-            "sqlite:///%s" % filename, bare_fields=True, **dataset_kw
+        db = peewee.SqliteDatabase("file:%s" % filename, uri=True, pragmas=pragmas)
+        _dataset = SqliteDataSet(db, bare_fields=True, **dataset_kw
         )
         with open_datasets_lock:
             all_open_datasets.append(_dataset)

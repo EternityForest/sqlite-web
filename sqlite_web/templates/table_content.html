@@ -116,7 +116,9 @@
           {% for field in field_names %}
             {% set value = row[field] %}
             <td>
-              {% if value is none %}
+              {% if field in foreign_key_fields %}
+                {{value|value_filter|safe }}
+              {% elif value is none %}
                 <code>NULL</code>
               {% else %}
                 {{ value|value_filter|safe }}
