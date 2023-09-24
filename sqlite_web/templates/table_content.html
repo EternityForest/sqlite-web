@@ -117,7 +117,7 @@
             {% set value = row[field] %}
             <td>
               {% if field in foreign_key_fields %}
-              {{foreign_key_datasets[field].get(value, value)|value_filter|safe }}
+              {{foreign_key_display_functions[field](value)|value_filter|safe }}
               ({{value|value_filter|safe }})
               {% elif value is none %}
                 <code>NULL</code>

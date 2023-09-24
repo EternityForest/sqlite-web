@@ -698,6 +698,52 @@ def drop_trigger(file, table):
     )
 
 
+def make_fk_summary_function(field):
+    """Given  a fk field, make a funtcion that takes a row from the parent table and summarizes it
+    for display."""
+    # We are going to make a summary of the table.
+    # Basically, first try to get something named name or title
+    # then try the first text field, finally try all the fields.
+
+    parent = field.rel_model
+
+    include_columns = []
+    for j in parent._meta.columns:
+        if not j == field.rel_field.name:
+            if j in ("name", "title"):
+                include_columns.append(j)
+
+    for j in parent._meta.columns:
+        if not j == field.rel_field.name:
+            if isinstance(parent._meta.columns[j], peewee.TextField):
+                include_columns.append(j)
+
+    for j in parent._meta.columns:
+        if not j == field.rel_field.name:
+            if not isinstance(
+                parent._meta.columns[j], peewee.ForeignKeyField
+            ):
+                include_columns.append(j)
+
+    def format_for_display(fk_field_value):
+        q = parent.select().where(
+            field.rel_field == fk_field_value
+        )
+
+        for j in q:
+            summary = ""
+            for k in include_columns:
+                d = str(getattr(j, k))
+                if (not summary) or (d and (len(d) < len(summary))):
+                    summary = d
+                if summary and len(summary) < 32:
+                    break
+
+            return summary.strip()[:32]
+
+        return fk_field_value
+    return format_for_display
+
 @app.route("/<file>/<table>/", methods=["GET", "POST"])
 @require_table
 def table_content(file, table):
@@ -725,7 +771,7 @@ def table_content(file, table):
     row = {}
     auto_fields = []
     foreign_key_fields = {}
-    foreign_key_datasets = {}
+    foreign_key_display_functions = {}
 
     for column in dataset.get_columns(file, table):
         field = model._meta.columns[column.name]
@@ -739,44 +785,7 @@ def table_content(file, table):
         row[column.name] = ""
 
     for idx, foreignkeyfield in foreign_key_fields.items():
-        q = foreignkeyfield.rel_model.select()
-        if q.count() < 256:
-            # We are going to make a summary of the table.
-            # Basically, first try to get something named name or title
-            # then try the first text field, finally try all the fields.
-            include_columns = []
-            for j in field.rel_model._meta.columns:
-                if not j == foreignkeyfield.rel_field.name:
-                    if j in ("name", "title"):
-                        include_columns.append(j)
-
-            for j in field.rel_model._meta.columns:
-                if not j == foreignkeyfield.rel_field.name:
-                    if isinstance(field.rel_model._meta.columns[j], peewee.TextField):
-                        include_columns.append(j)
-
-            for j in field.rel_model._meta.columns:
-                if not j == foreignkeyfield.rel_field.name:
-                    if not isinstance(
-                        field.rel_model._meta.columns[j], peewee.ForeignKeyField
-                    ):
-                        include_columns.append(j)
-
-            foreign_key_datasets[idx] = {}
-
-            for j in q:
-                summary = ""
-                for k in include_columns:
-                    d = str(getattr(j, k))
-                    if (not summary) or (d and (len(d) < len(summary))):
-                        summary = d
-                    if summary and len(summary) < 32:
-                        break
-
-                summary = summary.strip()[:32]
-                # Get the value of what the foreign key points to
-                key = getattr(j, foreignkeyfield.rel_field.name)
-                foreign_key_datasets[idx][key]=summary
+        foreign_key_display_functions[idx] = make_fk_summary_function(foreignkeyfield)
 
     example = {}
     if request.method == "POST":
@@ -827,7 +836,7 @@ def table_content(file, table):
         ds_table=ds_table,
         field_names=field_names,
         auto_fields=auto_fields,
-        foreign_key_datasets=foreign_key_datasets,
+        foreign_key_display_functions=foreign_key_display_functions,
         next_page=next_page,
         ordering=ordering,
         page=page_number,
