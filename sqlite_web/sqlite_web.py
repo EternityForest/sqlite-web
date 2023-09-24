@@ -788,18 +788,17 @@ def table_content(file, table):
         foreign_key_display_functions[idx] = make_fk_summary_function(foreignkeyfield)
 
     example = {}
-    if request.method == "POST":
-        for key, value in request.form.items():
-            if value:
-                if key not in col_dict:
-                    continue
-                column = col_dict[key]
-                example[column.name] = value
+    for key, value in request.args.items():
+        if value:
+            if key not in col_dict:
+                continue
+            column = col_dict[key]
+            example[column.name] = value
 
-                field = model._meta.columns[column.name]
-                value, err = minimal_validate_field(field, value)
-                if err:
-                    raise RuntimeError(err)
+            field = model._meta.columns[column.name]
+            value, err = minimal_validate_field(field, value)
+            if err:
+                raise RuntimeError(err)
 
     if example:
         query = ds_table.find(**example).paginate(page_number, rows_per_page)
@@ -849,6 +848,7 @@ def table_content(file, table):
         total_pages=total_pages,
         total_rows=total_rows,
         foreign_key_fields=foreign_key_fields,
+        str=str
     )
 
 

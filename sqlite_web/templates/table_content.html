@@ -88,7 +88,7 @@
   {% endif %}
 
 
-  <form id="search" action="{{url_for('table_content', file=file, table=table)}}" method="post"></form>
+  <form id="search" action="{{url_for('table_content', file=file, table=table)}}"></form>
   <table class="table table-striped small">
     <thead>
       <tr>
@@ -117,8 +117,16 @@
             {% set value = row[field] %}
             <td>
               {% if field in foreign_key_fields %}
-              {{foreign_key_display_functions[field](value)|value_filter|safe }}
-              ({{value|value_filter|safe }})
+ 
+              <form action="{{ url_for('table_content', table=foreign_key_fields[field].rel_model._meta.name, file=file)}}">
+                <input type="hidden" name="{{foreign_key_fields[field].rel_field.name|safe}}"
+                value="{{str(value)[:256]|safe}}">
+
+              <button>
+                {{foreign_key_display_functions[field](value)|value_filter|safe }}
+                ({{value|value_filter|safe }})
+              </button></form>
+
               {% elif value is none %}
                 <code>NULL</code>
               {% else %}
