@@ -2,24 +2,16 @@
 
 import base64
 import datetime
-import hashlib
-import logging
 import math
 import operator
-import optparse
 import os
 import re
 import sys
 import threading
-import time
-import webbrowser
 from collections import namedtuple, OrderedDict
 from functools import wraps
-from getpass import getpass
 from io import TextIOWrapper
-from logging.handlers import WatchedFileHandler
 from flask.logging import create_logger
-import urllib.parse
 
 import peewee
 from peewee import IndexMetadata
@@ -29,6 +21,7 @@ from playhouse.migrate import migrate
 
 from functools import reduce
 from io import StringIO
+
 
 binary_types = (bytes, bytearray)
 decode_handler = "backslashreplace"
@@ -110,17 +103,39 @@ app = Flask(
 app.config.from_object(__name__)
 LOG = create_logger(app)
 
-_dataset = None
-all_open_datasets = []
+
+all_open_datasets = {}
 open_datasets_lock = threading.Lock()
 
 
-def get_dataset(file=None):
+def resolve_dataset(name):
+    """Must return the filename URI given the internal URL name, along with whether writing is allowed
+    Only called from inside Flask
+    """
+    raise NotImplementedError()
+    return "", False
+
+
+def get_dataset(name):
     "Return the relevant dataset for this request"
-    return _dataset
+
+    name, ro = resolve_dataset(name)
+
+    with open_datasets_lock:
+        if not name in all_open_datasets:
+            if len(all_open_datasets) > 8:
+                j = None
+                for i in all_open_datasets:
+                    j = i
+
+                all_open_datasets[j].close()
+                del all_open_datasets[j]
+
+            all_open_datasets[(name, ro)] = open_dataset_from_file(name, ro)
+
+        return all_open_datasets[(name, ro)]
 
 
-#
 # Database metadata objects.
 #
 
@@ -291,23 +306,6 @@ def index(file=None):
     )
 
 
-@app.route("/login/", methods=["GET", "POST"])
-def login():
-    if request.method == "POST":
-        if request.form.get("password") == app.config["PASSWORD"]:
-            session["authorized"] = True
-            return redirect(session.get("next_url") or url_for("index"))
-        flash("The password you entered is incorrect.", "danger")
-        LOG.debug("Received incorrect password attempt from %s" % request.remote_addr)
-    return render_template("login.html")
-
-
-@app.route("/logout/", methods=["GET"])
-def logout():
-    session.pop("authorized", None)
-    return redirect(url_for("login"))
-
-
 def _query_view(template, file, table=None):
     dataset = get_dataset(file)
 
@@ -348,7 +346,7 @@ def _query_view(template, file, table=None):
     if qsql:
         if export_format:
             query = model_class.raw(qsql).dicts()
-            return export(query, export_format, table)
+            return export(file, query, export_format, table)
 
         try:
             cursor = dataset.query(qsql)
@@ -714,6 +712,7 @@ def get_all_backlinks(file):
 
     return backlinks
 
+
 def make_fk_summary_function(field):
     """Given  a fk field, make a funtcion that takes a row from the parent table and summarizes it
     for display."""
@@ -771,7 +770,6 @@ def table_content(file, table):
     model = ds_table.model_class
     total_rows = ds_table.all().count()
 
-
     columns = []
     col_dict = {}
     row = {}
@@ -800,9 +798,9 @@ def table_content(file, table):
         if not key.startswith("match_"):
             continue
         if value:
-            if key[len("match_"):] not in col_dict:
+            if key[len("match_") :] not in col_dict:
                 continue
-            column = col_dict[key[len("match_"):]]
+            column = col_dict[key[len("match_") :]]
             example2[column.name] = value
             example[key] = value
 
@@ -810,7 +808,6 @@ def table_content(file, table):
             value, err = minimal_validate_field(field, value)
             if err:
                 raise RuntimeError(err)
-            
 
     rows_per_page = app.config["ROWS_PER_PAGE"]
     total_pages = max(1, int(math.ceil(total_rows / float(rows_per_page))))
@@ -824,17 +821,24 @@ def table_content(file, table):
     else:
         query = ds_table.all().paginate(page_number, rows_per_page)
 
-
     previous_page = page_number - 1 if page_number > 1 else None
     next_page = page_number + 1 if page_number < total_pages else None
-
 
     counts = {}
     if total_rows < 2**14:
         for i in columns:
-            if model._meta.columns[i.name].field_type in ("REAL", "INTEGER", "INT", "DECIMAL"):
+            if model._meta.columns[i.name].field_type in (
+                "REAL",
+                "INTEGER",
+                "INT",
+                "DECIMAL",
+            ):
                 if not isinstance(model._meta.columns[i.name], peewee.ForeignKeyField):
-                    x = ds_table.find(**example2).select(fn.SUM(model._meta.columns[i.name])).scalar()
+                    x = (
+                        ds_table.find(**example2)
+                        .select(fn.SUM(model._meta.columns[i.name]))
+                        .scalar()
+                    )
                     counts[i.name] = x
 
     ordering = request.args.get("ordering")
@@ -848,10 +852,9 @@ def table_content(file, table):
 
     field_names = ds_table.columns
 
-
     backlinks = get_all_backlinks(file)
 
-    backlinks = {i:backlinks[i] for i in backlinks if i[0]== table}
+    backlinks = {i: backlinks[i] for i in backlinks if i[0] == table}
 
     return render_template(
         "table_content.html",
@@ -1129,7 +1132,7 @@ def table_query(file, table):
     return _query_view("table_query.html", file, table)
 
 
-def export(query, export_format, table=None):
+def export(file, query, export_format, table=None):
     buf = StringIO()
     if export_format == "json":
         kwargs = {"indent": 2}
@@ -1146,7 +1149,7 @@ def export(query, export_format, table=None):
     # Avoid any special chars in export filename.
     filename = re.sub(r"[^\w\d\-\.]+", "", filename)
 
-    get_dataset().freeze(query, export_format, file_obj=buf, **kwargs)
+    get_dataset(file).freeze(query, export_format, file_obj=buf, **kwargs)
 
     response_data = buf.getvalue()
     response = make_response(response_data)
@@ -1174,7 +1177,7 @@ def table_export(file, table):
             fields = [model._meta.columns[c] for c in selected]
             query = model.select(*fields).dicts()
             try:
-                return export(query, export_format, table)
+                return export(file, query, export_format, table)
             except Exception as exc:
                 flash("Error generating export: %s" % exc, "danger")
                 LOG.exception("Error generating export.")
@@ -1393,11 +1396,6 @@ def _now():
 
 
 @app.before_request
-def _connect_db():
-    get_dataset().connect()
-
-
-@app.before_request
 def _check_csrf():
     if "Origin" in request.headers:
         if request.headers["Origin"]:
@@ -1407,10 +1405,11 @@ def _check_csrf():
 
 @app.teardown_request
 def _close_db(exc):
-    with open_datasets_lock:
-        for dataset in all_open_datasets:
-            if not dataset._database.is_closed():
-                dataset.close()
+    pass
+    # with open_datasets_lock:
+    #     for dataset in all_open_datasets:
+    #         if not all_open_datasets[dataset]._database.is_closed():
+    #             dataset.close()
 
 
 class PrefixMiddleware(object):
@@ -1429,130 +1428,16 @@ class PrefixMiddleware(object):
             return ["URL does not match application prefix.".encode()]
 
 
-#
-# Script options.
-#
-
-
-def get_option_parser():
-    parser = optparse.OptionParser()
-    parser.add_option(
-        "-p",
-        "--port",
-        default=8089,
-        help="Port for web interface, default=8080",
-        type="int",
-    )
-    parser.add_option(
-        "-H",
-        "--host",
-        default="127.0.0.1",
-        help="Host for web interface, default=127.0.0.1",
-    )
-    parser.add_option(
-        "-d", "--debug", action="store_true", help="Run server in debug mode"
-    )
-    parser.add_option(
-        "-x",
-        "--no-browser",
-        action="store_false",
-        default=True,
-        dest="browser",
-        help="Do not automatically open browser page.",
-    )
-    parser.add_option(
-        "-l", "--log-file", dest="log_file", help="Filename for application logs."
-    )
-    parser.add_option(
-        "-P",
-        "--password",
-        action="store_true",
-        dest="prompt_password",
-        help="Prompt for password to access database browser.",
-    )
-    parser.add_option(
-        "-r",
-        "--read-only",
-        action="store_true",
-        dest="read_only",
-        help="Open database in read-only mode.",
-    )
-    parser.add_option(
-        "-R",
-        "--rows-per-page",
-        default=50,
-        dest="rows_per_page",
-        help="Number of rows to display per page (default=50)",
-        type="int",
-    )
-    parser.add_option(
-        "-u", "--url-prefix", dest="url_prefix", help="URL prefix for application."
-    )
-    parser.add_option(
-        "-e",
-        "--extension",
-        action="append",
-        dest="extensions",
-        help="Path or name of loadable extension.",
-    )
-    ssl_opts = optparse.OptionGroup(parser, "SSL options")
-    ssl_opts.add_option(
-        "-c", "--ssl-cert", dest="ssl_cert", help="SSL certificate file path."
-    )
-    ssl_opts.add_option(
-        "-k", "--ssl-key", dest="ssl_key", help="SSL private key file path."
-    )
-    ssl_opts.add_option(
-        "-a",
-        "--ad-hoc",
-        action="store_true",
-        dest="ssl_ad_hoc",
-        help="Use ad-hoc SSL context.",
-    )
-    parser.add_option_group(ssl_opts)
-    return parser
-
-
 def die(msg, exit_code=1):
     sys.stderr.write("%s\n" % msg)
     sys.stderr.flush()
     sys.exit(exit_code)
 
 
-def open_browser_tab(file, host, port):
-    url = "http://%s:%s/%s/" % (host, port,urllib.parse.quote_plus(file.replace("/","-")))
-
-    def _open_tab(url):
-        time.sleep(1.5)
-        webbrowser.open_new_tab(url)
-
-    thread = threading.Thread(target=_open_tab, args=(url,))
-    thread.daemon = True
-    thread.start()
+extensions = None
 
 
-def install_auth_handler(password):
-    app.config["PASSWORD"] = password
-
-    @app.before_request
-    def check_password():
-        if (
-            not session.get("authorized")
-            and request.path != "/login/"
-            and not request.path.startswith(("/static/", "/favicon"))
-        ):
-            flash("You must log-in to view the database browser.", "danger")
-            session["next_url"] = request.base_url
-            return redirect(url_for("login"))
-
-
-def initialize_app(
-    filename, read_only=False, password=None, url_prefix=None, extensions=None
-):
-    global _dataset
-
-    if password:
-        install_auth_handler(password)
+def open_dataset_from_file(filename, read_only=False):
     pragmas = {"foreign_keys": 1}
 
     dataset_kw = {}
@@ -1580,79 +1465,18 @@ def initialize_app(
         db = peewee.SqliteDatabase("file:%s" % filename, uri=True, pragmas=pragmas)
         _dataset = SqliteDataSet(db, bare_fields=True, **dataset_kw)
         with open_datasets_lock:
-            all_open_datasets.append(_dataset)
-
-    if url_prefix:
-        app.wsgi_app = PrefixMiddleware(app.wsgi_app, prefix=url_prefix)
+            all_open_datasets[filename] = _dataset
 
     if extensions:
         for ext in extensions:
             _dataset._database.load_extension(ext)
 
-    _dataset.close()
-    all_open_datasets.remove(_dataset)
+    return _dataset
 
 
-def main():
-    # This function exists to act as a console script entry-point.
-    parser = get_option_parser()
-    options, args = parser.parse_args()
-    args = ["/home/daniel/Downloads/Chinook_Sqlite.sqlite"]
-    if not args:
-        die("Error: missing required path to database file.")
+def initialize_app(url_prefix=None, use_extensions=None):
+    global extensions
+    extensions = use_extensions
 
-    if options.log_file:
-        fmt = logging.Formatter("[%(asctime)s] - [%(levelname)s] - %(message)s")
-        handler = WatchedFileHandler(options.log_file)
-        handler.setLevel(logging.DEBUG if options.debug else logging.WARNING)
-        handler.setFormatter(fmt)
-        LOG.addHandler(handler)
-
-    password = None
-    if options.prompt_password:
-        if os.environ.get("SQLITE_WEB_PASSWORD"):
-            password = os.environ["SQLITE_WEB_PASSWORD"]
-        else:
-            while True:
-                password = getpass("Enter password: ")
-                password_confirm = getpass("Confirm password: ")
-                if password != password_confirm:
-                    print("Passwords did not match!")
-                else:
-                    break
-
-    if options.rows_per_page:
-        app.config["ROWS_PER_PAGE"] = options.rows_per_page
-
-    # Initialize the dataset instance and (optionally) authentication handler.
-    initialize_app(
-        args[0], options.read_only, password, options.url_prefix, options.extensions
-    )
-
-    if options.browser:
-        open_browser_tab(args[0],options.host, options.port)
-
-    if password:
-        key = b"sqlite-web-" + args[0].encode("utf8") + password.encode("utf8")
-        app.secret_key = hashlib.sha256(key).hexdigest()
-
-    # Set up SSL context, if specified.
-    kwargs = {}
-    if options.ssl_ad_hoc:
-        kwargs["ssl_context"] = "adhoc"
-
-    if options.ssl_cert and options.ssl_key:
-        if not os.path.exists(options.ssl_cert) or not os.path.exists(options.ssl_key):
-            die("ssl cert or ssl key not found. Please check the file-paths.")
-        kwargs["ssl_context"] = (options.ssl_cert, options.ssl_key)
-    elif options.ssl_cert:
-        die('ssl key "-k" is required alongside the ssl cert')
-    elif options.ssl_key:
-        die('ssl cert "-c" is required alongside the ssl key')
-
-    # Run WSGI application.
-    app.run(host=options.host, port=options.port, debug=options.debug, **kwargs)
-
-
-if __name__ == "__main__":
-    main()
+    if url_prefix:
+        app.wsgi_app = PrefixMiddleware(app.wsgi_app, prefix=url_prefix)
