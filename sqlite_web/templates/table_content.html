@@ -144,6 +144,13 @@
                 <a class="small" href="{{ url_for('table_delete', table=table, file=file, pk=pk) }}">Delete</a>
                 {% endif %}
               {% endif %}
+
+              {% for lf in backlinks %}
+              {% for link in backlinks[lf] %}
+              <a class="small" href="{{ url_for('table_content', table=link[0], file=file, **{link[1]: row[lf[1]]} ) }}">{{link[0]}}</a>
+              {% endfor %}
+
+              {% endfor %}
             </td>
         </tr>
       {% endfor %}

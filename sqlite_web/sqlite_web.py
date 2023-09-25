@@ -164,9 +164,8 @@ class SqliteDataSet(DataSet):
         stat = os.stat(self.filename)
         return stat.st_size
 
-    def get_indexes(self, file, table):
-        dataset = get_dataset(file)
-        return dataset._database.get_indexes(table)
+    def get_indexes(self, table):
+        return self._database.get_indexes(table)
 
     def get_all_indexes(self):
         cursor = self.query(
@@ -176,13 +175,11 @@ class SqliteDataSet(DataSet):
         d = cursor.fetchall()
         return [IndexMetadata(row[0], row[1], None, None, None) for row in d]
 
-    def get_columns(self, file, table):
-        dataset = get_dataset(file)
-        return dataset._database.get_columns(table)
+    def get_columns(self, table):
+        return self._database.get_columns(table)
 
-    def get_foreign_keys(self, file, table):
-        dataset = get_dataset(file)
-        return dataset._database.get_foreign_keys(table)
+    def get_foreign_keys(self, table):
+        return self._database.get_foreign_keys(table)
 
     def get_triggers(self, table):
         cursor = self.query(
@@ -199,12 +196,11 @@ class SqliteDataSet(DataSet):
         )
         return [TriggerMetadata(*row) for row in cursor.fetchall()]
 
-    def get_table_sql(self, file, table):
-        dataset = get_dataset(file)
+    def get_table_sql(self, table):
         if not table:
             return
 
-        cursor = dataset.query(
+        cursor = self.query(
             "SELECT sql FROM sqlite_master WHERE tbl_name = ? AND type IN (?, ?)",
             [table, "table", "view"],
         )
@@ -376,7 +372,7 @@ def _query_view(template, file, table=None):
         table=table,
         file=file,
         dataset=dataset,
-        table_sql=dataset.get_table_sql(file, table),
+        table_sql=dataset.get_table_sql(table),
     )
 
 
@@ -424,13 +420,13 @@ def table_structure(file, table):
         "table_structure.html",
         file=file,
         dataset=dataset,
-        columns=dataset.get_columns(file, table),
+        columns=dataset.get_columns(table),
         ds_table=ds_table,
-        foreign_keys=dataset.get_foreign_keys(file, table),
-        indexes=dataset.get_indexes(file, table),
+        foreign_keys=dataset.get_foreign_keys(table),
+        indexes=dataset.get_indexes(table),
         model_class=model_class,
         table=table,
-        table_sql=dataset.get_table_sql(file, table),
+        table_sql=dataset.get_table_sql(table),
         triggers=dataset.get_triggers(table),
     )
 
@@ -511,7 +507,7 @@ def add_column(file, table):
         column_mapping=column_mapping,
         name=name,
         table=table,
-        table_sql=dataset.get_table_sql(file, table),
+        table_sql=dataset.get_table_sql(table),
     )
 
 
@@ -521,7 +517,7 @@ def drop_column(file, table):
     request_data = get_request_data()
     name = request_data.get("name", "")
     dataset = get_dataset(file)
-    columns = dataset.get_columns(file, table)
+    columns = dataset.get_columns(table)
     column_names = [column.name for column in columns]
 
     if request.method == "POST":
@@ -559,7 +555,7 @@ def rename_column(file, table):
     rename_to = request_data.get("rename_to", "")
     dataset = get_dataset(file)
 
-    columns = dataset.get_columns(file, table)
+    columns = dataset.get_columns(table)
     column_names = [column.name for column in columns]
 
     if request.method == "POST":
@@ -602,7 +598,7 @@ def add_index(file, table):
     indexed_columns = request_data.getlist("indexed_columns")
     unique = bool(request_data.get("unique"))
     dataset = get_dataset(file)
-    columns = get_dataset(file).get_columns(file, table)
+    columns = get_dataset(file).get_columns(table)
 
     if request.method == "POST":
         if indexed_columns:
@@ -637,7 +633,7 @@ def add_index(file, table):
 def drop_index(file, table):
     request_data = get_request_data()
     name = request_data.get("name", "")
-    indexes = get_dataset(file).get_indexes(file, table)
+    indexes = get_dataset(file).get_indexes(table)
     index_names = [index.name for index in indexes]
     dataset = get_dataset(file)
 
@@ -698,6 +694,25 @@ def drop_trigger(file, table):
     )
 
 
+def get_all_backlinks(file):
+    """Return a dict of (table, field) to [(table, field)] where the items in the list are foreign keys linking back to the main dict key
+    Used for things like finding all orders for a given customer
+    """
+
+    backlinks = {}
+
+    dataset = get_dataset(file)
+    for table in dataset.tables:
+        for column in dataset.get_columns(table):
+            field = dataset._models[table]._meta.columns[column.name]
+            if isinstance(field, peewee.ForeignKeyField):
+                k = field.rel_model._meta.table_name, field.rel_field.name
+                l = backlinks.get(k, list())
+                backlinks[k] = l
+                l.append((table, column.name))
+
+    return backlinks
+
 def make_fk_summary_function(field):
     """Given  a fk field, make a funtcion that takes a row from the parent table and summarizes it
     for display."""
@@ -720,15 +735,11 @@ def make_fk_summary_function(field):
 
     for j in parent._meta.columns:
         if not j == field.rel_field.name:
-            if not isinstance(
-                parent._meta.columns[j], peewee.ForeignKeyField
-            ):
+            if not isinstance(parent._meta.columns[j], peewee.ForeignKeyField):
                 include_columns.append(j)
 
     def format_for_display(fk_field_value):
-        q = parent.select().where(
-            field.rel_field == fk_field_value
-        )
+        q = parent.select().where(field.rel_field == fk_field_value)
 
         for j in q:
             summary = ""
@@ -742,7 +753,9 @@ def make_fk_summary_function(field):
             return summary.strip()[:32]
 
         return fk_field_value
+
     return format_for_display
+
 
 @app.route("/<file>/<table>/", methods=["GET", "POST"])
 @require_table
@@ -773,7 +786,7 @@ def table_content(file, table):
     foreign_key_fields = {}
     foreign_key_display_functions = {}
 
-    for column in dataset.get_columns(file, table):
+    for column in dataset.get_columns(table):
         field = model._meta.columns[column.name]
         if isinstance(field, peewee.AutoField):
             auto_fields.append(column.name)
@@ -825,9 +838,13 @@ def table_content(file, table):
     field_names = ds_table.columns
 
 
+    backlinks = get_all_backlinks(file)
+
+    backlinks = {i:backlinks[i] for i in backlinks if i[0]== table}
 
     return render_template(
         "table_content.html",
+        backlinks=backlinks,
         file=file,
         columns=columns,
         counts=counts,
@@ -844,11 +861,11 @@ def table_content(file, table):
         query=query,
         table=table,
         table_pk=model._meta.primary_key,
-        table_sql=dataset.get_table_sql(file, table),
+        table_sql=dataset.get_table_sql(table),
         total_pages=total_pages,
         total_rows=total_rows,
         foreign_key_fields=foreign_key_fields,
-        str=str
+        str=str,
     )
 
 
@@ -893,7 +910,7 @@ def table_insert(file, table):
     columns = []
     col_dict = {}
     row = {}
-    for column in dataset.get_columns(file, table):
+    for column in dataset.get_columns(table):
         field = model._meta.columns[column.name]
         if isinstance(field, peewee.AutoField):
             continue
@@ -986,7 +1003,7 @@ def table_update(file, table, pk):
         flash("Could not fetch row with primary-key %s." % str(pk_repr), "danger")
         return redirect(url_for("table_content", file=file, table=table))
 
-    columns = dataset.get_columns(file, table)
+    columns = dataset.get_columns(table)
     col_dict = {}
     row = {}
     for column in columns:
@@ -1083,7 +1100,7 @@ def table_delete(file, table, pk):
 
     return render_template(
         "table_delete.html",
-        column_names=[c.name for c in dataset.get_columns(file, table)],
+        column_names=[c.name for c in dataset.get_columns(table)],
         file=file,
         dataset=dataset,
         model=model,
@@ -1133,7 +1150,7 @@ def export(query, export_format, table=None):
 @require_table
 def table_export(file, table):
     dataset = get_dataset(file)
-    columns = dataset.get_columns(file, table)
+    columns = dataset.get_columns(table)
     if request.method == "POST":
         export_format = request.form.get("export_format") or "json"
         col_dict = {c.name: c for c in columns}
@@ -1568,7 +1585,7 @@ def main():
     # This function exists to act as a console script entry-point.
     parser = get_option_parser()
     options, args = parser.parse_args()
-    args = ["/home/daniel/test.db"]
+    args = ["/home/daniel/Downloads/Chinook_Sqlite.sqlite"]
     if not args:
         die("Error: missing required path to database file.")
 
