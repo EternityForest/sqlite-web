@@ -19,6 +19,7 @@ from getpass import getpass
 from io import TextIOWrapper
 from logging.handlers import WatchedFileHandler
 from flask.logging import create_logger
+import urllib.parse
 
 import peewee
 from peewee import IndexMetadata
@@ -768,16 +769,8 @@ def table_content(file, table):
     dataset.update_cache(table)
     ds_table = dataset[table]
     model = ds_table.model_class
-
     total_rows = ds_table.all().count()
-    rows_per_page = app.config["ROWS_PER_PAGE"]
-    total_pages = max(1, int(math.ceil(total_rows / float(rows_per_page))))
-    # Restrict bounds.
-    page_number = min(page_number, total_pages)
-    page_number = max(page_number, 1)
 
-    previous_page = page_number - 1 if page_number > 1 else None
-    next_page = page_number + 1 if page_number < total_pages else None
 
     columns = []
     col_dict = {}
@@ -800,31 +793,49 @@ def table_content(file, table):
     for idx, foreignkeyfield in foreign_key_fields.items():
         foreign_key_display_functions[idx] = make_fk_summary_function(foreignkeyfield)
 
+    # with and without the prefix
     example = {}
+    example2 = {}
     for key, value in request.args.items():
+        if not key.startswith("match_"):
+            continue
         if value:
-            if key not in col_dict:
+            if key[len("match_"):] not in col_dict:
                 continue
-            column = col_dict[key]
-            example[column.name] = value
+            column = col_dict[key[len("match_"):]]
+            example2[column.name] = value
+            example[key] = value
 
             field = model._meta.columns[column.name]
             value, err = minimal_validate_field(field, value)
             if err:
                 raise RuntimeError(err)
+            
+
+    rows_per_page = app.config["ROWS_PER_PAGE"]
+    total_pages = max(1, int(math.ceil(total_rows / float(rows_per_page))))
+
+    # Restrict bounds, approx
+    page_number = min(page_number, total_pages)
+    page_number = max(page_number, 1)
 
     if example:
-        query = ds_table.find(**example).paginate(page_number, rows_per_page)
+        query = ds_table.find(**example2).paginate(page_number, rows_per_page)
     else:
         query = ds_table.all().paginate(page_number, rows_per_page)
 
-    count = query.count()
+
+    previous_page = page_number - 1 if page_number > 1 else None
+    next_page = page_number + 1 if page_number < total_pages else None
+
+
     counts = {}
-    if count < 2**14:
+    if total_rows < 2**14:
         for i in columns:
-            if model._meta.columns[i.name].field_type in ("REAL", "INTEGER", "INT"):
-                x = query.select(fn.SUM(model._meta.columns[i.name])).scalar()
-                counts[i.name] = x
+            if model._meta.columns[i.name].field_type in ("REAL", "INTEGER", "INT", "DECIMAL"):
+                if not isinstance(model._meta.columns[i.name], peewee.ForeignKeyField):
+                    x = ds_table.find(**example2).select(fn.SUM(model._meta.columns[i.name])).scalar()
+                    counts[i.name] = x
 
     ordering = request.args.get("ordering")
     if ordering:
@@ -857,6 +868,7 @@ def table_content(file, table):
         ordering=ordering,
         page=page_number,
         example=example,
+        example2=example2,
         previous_page=previous_page,
         query=query,
         table=table,
@@ -1507,8 +1519,8 @@ def die(msg, exit_code=1):
     sys.exit(exit_code)
 
 
-def open_browser_tab(host, port):
-    url = "http://%s:%s/" % (host, port)
+def open_browser_tab(file, host, port):
+    url = "http://%s:%s/%s/" % (host, port,urllib.parse.quote_plus(file.replace("/","-")))
 
     def _open_tab(url):
         time.sleep(1.5)
@@ -1618,7 +1630,7 @@ def main():
     )
 
     if options.browser:
-        open_browser_tab(options.host, options.port)
+        open_browser_tab(args[0],options.host, options.port)
 
     if password:
         key = b"sqlite-web-" + args[0].encode("utf8") + password.encode("utf8")
