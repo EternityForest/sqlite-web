@@ -1,18 +1,9 @@
 ![](http://media.charlesleifer.com/blog/photos/sqlite-web.png)
 
 `sqlite-web` is a web-based SQLite database browser written in Python.
+This is a fork, with many changes and different goals from the original.
 
-Project dependencies:
-
-* [flask](http://flask.pocoo.org)
-* [peewee](http://docs.peewee-orm.com)
-* [pygments](http://pygments.org)
-
-### Installation
-
-```sh
-$ pip install sqlite-web
-```
+Currently, it is only meant for single-digit-megabyte databases, the kind one might use excel for, as this fork adds heavier features.
 
 ### Usage
 
@@ -31,7 +22,8 @@ $ sqlite_web /path/to/database.db
 * Import JSON or CSV files.
 * Browse table data.
 * Insert, Update or Delete rows.
-
+* Navigate forwards and backwards on foreign key matches.
+* 
 ### Screenshots
 
 The index page shows some basic information about the database, including the number of tables and indexes, as well as its size on disk:
@@ -97,18 +89,3 @@ The following options are available:
 * `-u`, `--url-prefix`: URL prefix for application, e.g. "/sqlite-web".
 * `-c`, `--cert` and ``-k``, ``--key`` - specify SSL cert and private key.
 * `-a`, `--ad-hoc` - run using an ad-hoc SSL context.
-
-### Using docker
-
-A Dockerfile is provided with sqlite-web. To use:
-
-```console
-
-$ cd docker/  # Change dirs to the dir containing Dockerfile
-$ docker build -t coleifer/sqlite-web .
-$ docker run -it --rm \
-    -p 8080:8080 \
-    -v /path/to/your-data:/data \
-    -e SQLITE_DATABASE=db_filename.db \
-    coleifer/sqlite-web
-```
