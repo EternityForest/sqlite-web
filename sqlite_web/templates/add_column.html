@@ -4,39 +4,30 @@
 
 {% block inner_content %}
 <h3>Add Column</h3>
-<form action="{{ url_for('add_column', file=file, table=table) }}" class="form" method="post">
-  <div class="form-group">
-    <label for="id_name">Column name</label>
-    <input class="form-control" id="id_name" name="name" type="text" placeholder="my_column" value="{{ name }}" />
-  </div>
-  <div class="form-group">
-    <label for="id_type">Column type</label>
+<form action="{{ url_for('add_column', file=file, table=table) }}" class="stacked-form w-sm-full" method="post">
+    <label for="id_name">Column name <input class="form-control" id="id_name" name="name" type="text" placeholder="my_column" value="{{ name }}" /></label>
+   
+    <label for="id_type">Column type
     <select class="form-control" id="id_type" name="type">
       <option value="">Select column type</option>
       {% for column in column_mapping %}
       <option {% if column == col_type %}selected="selected" {% endif %}value="{{ column }}">{{ column }}</option>
       {% endfor %}
-    </select>
-  </div>
+    </select></label>
 
-  <div class="form-group">
-    <label for="option_null">Allow NULL</label>
-    <input class="form-control" id="option_null" name="option_null" type="checkbox" checked />
-  </div>
+    <label for="option_null"> <input class="form-control" id="option_null" name="option_null" type="checkbox" checked />
+      Allow NULL
+  </label>
 
 
-  <div class="form-group">
-    <label for="use_default">Use a default value(Uncheck for NULL default)</label>
-    <input class="form-control" id="use_default" name="use_default" type="checkbox" />
-  </div>
+  <label for="use_default"><input class="form-control" id="use_default" name="use_default" type="checkbox" />Use a default value(Uncheck for NULL default)</label>
+    
 
-  <div class="form-group">
-    <label for="default_value">Default Value</label>
-    <input class="form-control" id="default_value" name="default_value" type="text"/>
-  </div>
+  <label for="default_value">
+Default Value<input class="form-control" id="default_value" name="default_value" type="text"/></label>
 
 
-  <div>
+  <fieldset>
     <details>
       <summary>Linking help</summary>
     Linking means that the value in this field is meant to correspond with a value found in another table, allowing you
@@ -48,14 +39,12 @@
     Column type is ignored.  As you might expect, links are just FOREIGN KEY constraints under the hood.
   </details>
 
-  </div>
 
-  <div class="form-group">
-    <label for="fk_table">Link to table</label>
-    <input class="form-control" id="fk_table" name="fk_table" type="text" placeholder="Unlinked" value="" />
-    <label for="fk_field">Link Field</label>
-    <input class="form-control" id="fk_field" name="fk_field" type="text" placeholder="" value="" />
-  </div>
+    <label for="fk_table">Link to table <input class="form-control" id="fk_table" name="fk_table" type="text" placeholder="Unlinked" value="" /></label>
+   
+    <label for="fk_field">Link Field    <input class="form-control" id="fk_field" name="fk_field" type="text" placeholder="" value="" />
+</label>
+  </fieldset>
 
   <button class="btn btn-primary" type="submit">Add column</button>
   <a class="btn btn-secondary" href="{{ url_for('table_structure', file=file, table=table) }}">Cancel</a>

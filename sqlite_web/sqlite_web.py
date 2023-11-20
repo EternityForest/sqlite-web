@@ -10,7 +10,10 @@ import sys
 import threading
 from collections import namedtuple, OrderedDict
 from functools import wraps
+from functools import reduce
+from io import StringIO
 from io import TextIOWrapper
+
 from flask.logging import create_logger
 
 import peewee
@@ -19,12 +22,8 @@ from peewee import fn
 from playhouse.dataset import DataSet
 from playhouse.migrate import migrate
 
-from functools import reduce
-from io import StringIO
 
-
-binary_types = (bytes, bytearray)
-decode_handler = "backslashreplace"
+BINARY_TYPES = (bytes, bytearray)
 
 
 try:
@@ -100,12 +99,26 @@ app = Flask(
     static_folder=os.path.join(CUR_DIR, "static"),
     template_folder=os.path.join(CUR_DIR, "templates"),
 )
+app.config['TEMPLATES_AUTO_RELOAD'] = True
+
+
+def get_theme_url(db):
+    return url_for('static', filename='css/barrel.css')
+
+# TODO: This won't work standalone because it references the kaithem file
+
+
+@app.context_processor
+def inject():
+    return {'theme_url': get_theme_url('')}
+
+
 app.config.from_object(__name__)
 LOG = create_logger(app)
 
 
 all_open_datasets = {}
-open_datasets_lock = threading.Lock()
+open_datasets_lock = threading.RLock()
 
 
 def resolve_dataset(name):
@@ -118,8 +131,9 @@ def resolve_dataset(name):
 
 def get_dataset(name):
     "Return the relevant dataset for this request"
-
-    name, ro = resolve_dataset(name)
+    global resolve_dataset
+    name, rw = resolve_dataset(name)
+    ro = not rw
 
     with open_datasets_lock:
         if not name in all_open_datasets:
@@ -477,7 +491,8 @@ def add_column(file, table):
         if name and col_type in column_mapping:
             try:
                 if not fk_table:
-                    col = column_mapping[col_type](null=nullable, default=default)
+                    col = column_mapping[col_type](
+                        null=nullable, default=default)
                 else:
                     fk = dataset._models[fk_table]._meta.fields[fk_field]
                     col = peewee.ForeignKeyField(
@@ -489,7 +504,8 @@ def add_column(file, table):
 
                 migrate(dataset._migrator.add_column(table, name, col))
             except Exception as exc:
-                flash('Error attempting to add column "%s": %s' % (name, exc), "danger")
+                flash('Error attempting to add column "%s": %s' %
+                      (name, exc), "danger")
                 LOG.exception("Error attempting to add column.")
             else:
                 flash('Column "%s" was added successfully!' % name, "success")
@@ -525,11 +541,13 @@ def drop_column(file, table):
                 migrate(dataset._migrator.drop_column(table, name))
             except Exception as exc:
                 flash(
-                    'Error attempting to drop column "%s": %s' % (name, exc), "danger"
+                    'Error attempting to drop column "%s": %s' % (
+                        name, exc), "danger"
                 )
                 LOG.exception("Error attempting to drop column.")
             else:
-                flash('Column "%s" was dropped successfully!' % name, "success")
+                flash('Column "%s" was dropped successfully!' %
+                      name, "success")
                 dataset.update_cache(table)
                 return redirect(url_for("table_structure", file=file, table=table))
         else:
@@ -560,15 +578,18 @@ def rename_column(file, table):
     if request.method == "POST":
         if (rename in column_names) and (rename_to not in column_names):
             try:
-                migrate(dataset._migrator.rename_column(table, rename, rename_to))
+                migrate(dataset._migrator.rename_column(
+                    table, rename, rename_to))
             except Exception as exc:
                 flash(
-                    'Error attempting to rename column "%s": %s' % (rename, exc),
+                    'Error attempting to rename column "%s": %s' % (
+                        rename, exc),
                     "danger",
                 )
                 LOG.exception("Error attempting to rename column.")
             else:
-                flash('Column "%s" was renamed successfully!' % rename, "success")
+                flash('Column "%s" was renamed successfully!' %
+                      rename, "success")
                 dataset.update_cache(table)
                 return redirect(url_for("table_structure", file=file, table=table))
         else:
@@ -677,7 +698,8 @@ def drop_trigger(file, table):
                 flash("Error attempting to drop trigger: %s" % exc, "danger")
                 LOG.exception("Error attempting to drop trigger.")
             else:
-                flash('Trigger "%s" was dropped successfully!' % name, "success")
+                flash('Trigger "%s" was dropped successfully!' %
+                      name, "success")
                 return redirect(url_for("table_structure", table=table, file=file))
         else:
             flash("Trigger name is required.", "danger")
@@ -789,7 +811,8 @@ def table_content(file, table):
         row[column.name] = ""
 
     for idx, foreignkeyfield in foreign_key_fields.items():
-        foreign_key_display_functions[idx] = make_fk_summary_function(foreignkeyfield)
+        foreign_key_display_functions[idx] = make_fk_summary_function(
+            foreignkeyfield)
 
     # with and without the prefix
     example = {}
@@ -798,9 +821,9 @@ def table_content(file, table):
         if not key.startswith("match_"):
             continue
         if value:
-            if key[len("match_") :] not in col_dict:
+            if key[len("match_"):] not in col_dict:
                 continue
-            column = col_dict[key[len("match_") :]]
+            column = col_dict[key[len("match_"):]]
             example2[column.name] = value
             example[key] = value
 
@@ -963,7 +986,8 @@ def table_insert(file, table):
             else:
                 flash("Successfully inserted record (%s)." % n, "success")
                 return redirect(
-                    url_for("table_content", file=file, table=table, page="last")
+                    url_for("table_content", file=file,
+                            table=table, page="last")
                 )
         else:
             flash("No data was specified to be inserted.", "warning")
@@ -1015,7 +1039,8 @@ def table_update(file, table, pk):
         obj = model.get(expr)
     except model.DoesNotExist:
         pk_repr = pk_display(table_pk, pk)
-        flash("Could not fetch row with primary-key %s." % str(pk_repr), "danger")
+        flash("Could not fetch row with primary-key %s." %
+              str(pk_repr), "danger")
         return redirect(url_for("table_content", file=file, table=table))
 
     columns = dataset.get_columns(table)
@@ -1099,7 +1124,8 @@ def table_delete(file, table, pk):
         row = model.select().where(expr).dicts().get()
     except model.DoesNotExist:
         pk_repr = pk_display(table_pk, pk)
-        flash("Could not fetch row with primary-key %s." % str(pk_repr), "danger")
+        flash("Could not fetch row with primary-key %s." %
+              str(pk_repr), "danger")
         return redirect(url_for("table_content", file=file, table=table))
 
     if request.method == "POST":
@@ -1155,7 +1181,8 @@ def export(file, query, export_format, table=None):
     response = make_response(response_data)
     response.headers["Content-Length"] = len(response_data)
     response.headers["Content-Type"] = mimetype
-    response.headers["Content-Disposition"] = 'attachment; filename="%s"' % (filename)
+    response.headers["Content-Disposition"] = 'attachment; filename="%s"' % (
+        filename)
     response.headers["Expires"] = 0
     response.headers["Pragma"] = "public"
     return response
@@ -1169,7 +1196,8 @@ def table_export(file, table):
     if request.method == "POST":
         export_format = request.form.get("export_format") or "json"
         col_dict = {c.name: c for c in columns}
-        selected = [c for c in (request.form.getlist("columns") or []) if c in col_dict]
+        selected = [c for c in (request.form.getlist(
+            "columns") or []) if c in col_dict]
         if not selected:
             flash("Please select one or more columns to export.", "danger")
         else:
@@ -1260,7 +1288,8 @@ def drop_table(file, table):
                 model_class = dataset[table].model_class
                 model_class.drop_table()
         except Exception:
-            flash('Error attempting to drop %s "%s".' % (label, table), "danger")
+            flash('Error attempting to drop %s "%s".' %
+                  (label, table), "danger")
             LOG.exception('Error attempting to drop %s "%s".', label, table)
         else:
             dataset.update_cache()  # Update all tables.
@@ -1323,7 +1352,7 @@ def value_filter(value, max_length=50):
     if isinstance(value, (int, float)):
         return value
 
-    if isinstance(value, binary_types):
+    if isinstance(value, BINARY_TYPES):
         if not isinstance(value, (bytes, bytearray)):
             value = bytes(value)  # Handle `buffer` type.
         value = base64.b64encode(value)[:1024].decode("utf8")
@@ -1403,15 +1432,6 @@ def _check_csrf():
                 raise RuntimeError("CSRF not allowed")
 
 
-@app.teardown_request
-def _close_db(exc):
-    pass
-    # with open_datasets_lock:
-    #     for dataset in all_open_datasets:
-    #         if not all_open_datasets[dataset]._database.is_closed():
-    #             dataset.close()
-
-
 class PrefixMiddleware(object):
     def __init__(self, app, prefix):
         self.app = app
@@ -1420,7 +1440,7 @@ class PrefixMiddleware(object):
 
     def __call__(self, environ, start_response):
         if environ["PATH_INFO"].startswith(self.prefix):
-            environ["PATH_INFO"] = environ["PATH_INFO"][self.prefix_len :]
+            environ["PATH_INFO"] = environ["PATH_INFO"][self.prefix_len:]
             environ["SCRIPT_NAME"] = self.prefix
             return self.app(environ, start_response)
         else:
@@ -1462,7 +1482,8 @@ def open_dataset_from_file(filename, read_only=False):
         db.close()
         _dataset = SqliteDataSet(db, bare_fields=True, **dataset_kw)
     else:
-        db = peewee.SqliteDatabase("file:%s" % filename, uri=True, pragmas=pragmas)
+        db = peewee.SqliteDatabase(
+            "file:%s" % filename, uri=True, pragmas=pragmas)
         _dataset = SqliteDataSet(db, bare_fields=True, **dataset_kw)
         with open_datasets_lock:
             all_open_datasets[filename] = _dataset
